@@ -1,0 +1,21 @@
+# Odin / raylib build output
+*.exe
+*.pdb
+*.obj
+*.o
+*.ilk
+*.exp
+*.lib
+*.dll
+*.dylib
+*.so
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local session resume
+resume.cmd
+resume.ps1
+resume.sh

@@ -13,7 +13,9 @@
 
 package src
 import "core:fmt"
+import "core:math/rand"
 import "core:os"
+import "core:time"
 import rl "vendor:raylib"
 
 // Screen
@@ -25,105 +27,89 @@ SCREEN_LEFT: = SCW - SCW; SCREEN_RIGHT: = SCW
 PADW: i32 = 150; PADH: i32 = 20
 PAD_TOP: i32 = SCREEN_BOT - (PADH + PADH); PAD_BOT: i32 = SCREEN_BOT - PADH
 
-// Brick
-RECT_W: i32 = 70; RECT_H: i32 = 50
-RECT_COLOR: rl.Color = rl.GREEN
-generateRects :: proc(level : string) -> [dynamic]rune {
-    //Read from text file to place rects in the level.
-    inData, err := os.read_entire_file(level, context.allocator)
+// Ball
+BALL_R :: 10
 
-    // if err != nil {
-    //     fmt.eprintf("Failed to read '%s': %v\n", level, err)
-    // }
-
-    rects := string(inData)
-    // fmt.printf("___\nRECTS:\n%s\n___\n", rects)
-    delete(inData)
-
-    levelData := [dynamic]rune {}
-    for rect in rects {
-   		append(&levelData, rect)
-    }
-    return levelData
+Ball :: struct {
+	x, y:            i32,
+	speed_x, speed_y: i32,
+	alive:           bool,
 }
-renderRects :: proc(levelData : [dynamic]rune){
-	wid : i32 = 7
-	i : i32 = 0
-	j : i32 = 0
-	for data in levelData {
-		for i < wid {
-			switch data {
-			case 'B':
-				rl.DrawRectangle(10 + ((RECT_W + 5) * (i + 2)), -400 + ((RECT_H + 5) * j), RECT_W, RECT_H, rl.RED)
-			}
-			i += 1
-		}
-		i = 0
-		if i == 0 {
-			j+=1
-		}
-	}
-}
-collideRects :: proc(levelData : ^[dynamic]rune, ballPosX : ^i32, ballPosY : ^i32){
-	for data in levelData {
-		// This could be a problem lol.
-	}
-}
-
 
 game :: proc() {
 	rl.InitWindow(SCW, SCH, "RECT-DESTROYER!")
 
 	rl.SetTargetFPS(500)
+	rand.reset(u64(time.to_unix_nanoseconds(time.now())))
 	level1 := generateRects("src/lvl1.txt")
+	defer delete(level1)
 
-	ballPosX : i32 = SCW/2; ballPosY : i32 = SCH/2
-	ballSpeedX: i32 = 1; ballSpeedY: i32 = 1
+	balls := make([dynamic]Ball)
+	defer delete(balls)
+	append(&balls, Ball{x = SCW / 2, y = SCH / 2, speed_x = 1, speed_y = 1, alive = true})
+
+	falling := make([dynamic]Falling_Powerup)
+	defer delete(falling)
+	pad_w := PADW
+	multiply_until: f64 = 0
 
 	for !rl.WindowShouldClose() {
 		// ___ Live data updates
 		padPos : f32 = rl.GetMousePosition().x
-
-		PAD_LEFT: i32 = (i32(padPos) + PADW/2) - (PADW - PADW); PAD_RIGHT: i32 = (i32(padPos) + PADW/2) - PADW
-
 		mouseLocation := rl.GetMousePosition()
 
 		if rl.IsMouseButtonPressed(rl.MouseButton.RIGHT) {
-			ballPosX = SCW/2; ballPosY = SCH/2
+			clear(&balls)
+			append(&balls, Ball{x = SCW / 2, y = SCH / 2, speed_x = 1, speed_y = 1, alive = true})
 		}
 
+		pad_left := i32(padPos) - pad_w / 2
+		pad_right := i32(padPos) + pad_w / 2
 
-		ballPosY += ballSpeedY
-		ballPosX += ballSpeedX
-		// if ballPosY > SCREEN_BOT {
-		// 	ballSpeedY = -ballSpeedY
-		// }
-		if ballPosY < SCREEN_TOP {
-			ballSpeedY = -ballSpeedY
-		}
-		if ballPosX > SCREEN_RIGHT {
-			ballSpeedX = -ballSpeedX
-		}
-		if ballPosX < SCREEN_LEFT {
-			ballSpeedX = -ballSpeedX
-		}
-		if ballPosX > PAD_RIGHT && ballPosX < PAD_LEFT && ballPosY < PAD_BOT {
-			if ballPosY > PAD_TOP {
-				ballSpeedY = -ballSpeedY
-				// fmt.printf("Collided with pad")
+		ball_count := len(balls)
+		for i in 0..<ball_count {
+			ball := &balls[i]
+			if !ball.alive do continue
+
+			ball.y += ball.speed_y
+			ball.x += ball.speed_x
+			// if ball.y > SCREEN_BOT {
+			// 	ball.speed_y = -ball.speed_y
+			// }
+			if ball.y > SCH {
+				ball.alive = false
+				continue
+			}
+			if ball.y < SCREEN_TOP do ball.speed_y = -ball.speed_y
+			if ball.x > SCREEN_RIGHT do ball.speed_x = -ball.speed_x
+			if ball.x < SCREEN_LEFT do ball.speed_x = -ball.speed_x
+			if ball.x > pad_left && ball.x < pad_right && ball.y < PAD_BOT {
+				if ball.y > PAD_TOP {
+					ball.speed_y = -ball.speed_y
+					// fmt.printf("Collided with pad")
+				}
+			}
+			if ball.y < PAD_BOT && ball.y > PAD_TOP {
+				if ball.x > pad_right {
+					ball.speed_x = -ball.speed_x
+					// ball.speed_y = 1
+				}
+				if ball.y < pad_left {
+					ball.speed_x = -ball.speed_x
+					// ball.speed_y = 1
+				}
+			}
+
+			hit, broke, hp_before, brick_index := collideRects(&level1, ball)
+			if hit && hp_before > 1 && rl.GetTime() < multiply_until {
+				spawn_multiplied_balls(&balls, ball.x, ball.y)
+			}
+			if broke {
+				grant_brick_drops(level1[brick_index], &falling, &pad_w, &multiply_until)
 			}
 		}
-		if ballPosY < PAD_BOT && ballPosY > PAD_TOP {
-			if ballPosX > PAD_LEFT {
-				ballSpeedX = -ballSpeedX
-				// ballSpeedY = 1
-			}
-			if ballPosY < PAD_RIGHT {
-				ballSpeedX = -ballSpeedX
-				// ballSpeedY = 1
-			}
-		}
-		// RECT COLLISION HERE
+
+		update_falling_powerups(&falling, pad_left, 570, PADH, &pad_w, rl.GetFrameTime(), &multiply_until)
 
 
 		// ___
@@ -135,15 +121,20 @@ game :: proc() {
 		mouseLocationText : string = fmt.tprintf("  X = %v, Y = %v", mouseLocation.x, mouseLocation.y)
 		// rl.DrawText(fmt.caprintf(mouseLocationText), i32(mouseLocation.x), i32(mouseLocation.y), 35, rl.RED)
 
-		rl.DrawRectangle(i32(padPos) - (PADW/2), 570.0, PADW, PADH, rl.WHITE)
+		rl.DrawRectangle(pad_left, 570, pad_w, PADH, rl.WHITE)
 		// rl.DrawRectangle(PAD_LEFT, PAD_TOP, 12, 12, rl.GREEN)
 		// rl.DrawRectangle(PAD_RIGHT, PAD_TOP, 12, 12, rl.GREEN)
 		// rl.DrawRectangle(PAD_LEFT, PAD_BOT, 12, 12, rl.GREEN)
 		// rl.DrawRectangle(PAD_RIGHT, PAD_BOT, 12, 12, rl.GREEN)
 
-		rl.DrawCircle(ballPosX, ballPosY, 10, rl.RED)
+		for ball in balls {
+			if !ball.alive do continue
+			rl.DrawCircle(ball.x, ball.y, BALL_R, rl.RED)
+		}
 
 		renderRects(level1)
+		render_falling_powerups(falling)
+		render_multiply_timer(multiply_until)
 
 		rl.EndDrawing()
 	}

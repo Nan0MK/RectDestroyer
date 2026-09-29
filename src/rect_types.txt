@@ -1,2 +1,4 @@
-B = basic_rect
-T = tough_rect
+# symbol = name hitpoints COLOR
+B = basic_rect 1 GREEN {}
+T = tough_rect 3 ORANGE {multiply 20%}
+S = strong_rect 10 RED {wide 50%, multiply 30%}

@@ -1,0 +1,8 @@
+# Powerups for gameplay
+
+wide PAD
+# Widen pad by '1'
+
+multiply BALL
+# every time ball hists rect with more than 1 hit point (balls * 2) spawns from the hit location
+# Lasts 10 seconds
