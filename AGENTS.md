@@ -7,7 +7,7 @@ odin check src
 odin run src
 ```
 
-Level and config paths are relative to that working directory (`src/lvl1.txt`, `src/rect_types.txt`, `src/powerup_types.txt`). The window is 800×600. Target FPS is 500. The ball moves 1 pixel per frame.
+Level and config paths are relative to that working directory (`src/levels/lvl1.txt`, `src/rect_types.txt`, `src/powerup_types.txt`). The window is 800×600. Target FPS is 500. The ball moves 1 pixel per frame.
 
 ## Session resume
 
@@ -15,18 +15,23 @@ When you work on this project, leave a script in the repo root that resumes your
 
 Add that filename to `.gitignore` if it is not already listed. Do not commit the script.
 
+## Keep this file current
+
+When you make progress, update this file before you finish. Change `Layout` if a file's job moved. Change `What works` and `Not built yet` so they describe the game as it is now. Write the current behavior. Do not append a history of the edit.
+
 ## Layout
 
 | File | Role |
 |---|---|
-| `src/main.odin` | Window, paddle, ball list, frame loop |
-| `src/bricks.odin` | Level grid, brick types, hit points, bounce |
-| `src/powerups.odin` | Powerup definitions, falling drops, multiply |
-| `src/lvl1.txt` | The only level. One character per cell, newline starts a row. Space and `.` are empty. |
+| `src/main.odin` | Window, paddle, ball list, frame loop, `LEVELS` |
+| `src/bricks.odin` | Level grid, brick types, hit points, drawing, bounce |
+| `src/powerups.odin` | Powerup types, `{...}` drop lists (`parse_drop_tail`), falling drops, multiply |
+| `.gitignore` | Build output (`*.exe`, `*.pdb`, and the other binary extensions) and `resume.cmd`, `resume.ps1`, `resume.sh` |
+| `src/levels/lvl1.txt` `lvl2.txt` `lvl3.txt` | Levels, in the order listed by `LEVELS` in `main.odin`. One character per cell, newline starts a row. Space and `.` are empty. |
 | `src/rect_types.txt` | Brick types |
 | `src/powerup_types.txt` | Powerup names and whether they are `PAD` or `BALL` |
 
-`src/lvl1.txt` is a 9-by-6 grid of `B`, `T`, and `S`. The game loads that path only. There is no level select.
+`LEVELS` in `main.odin` is the whole level handler. When no brick has hit points left, the game loads the next path, clears falling drops, resets the paddle width and multiply timer, and serves one ball. The last level stays cleared. There is no level select.
 
 ## Config
 
@@ -36,7 +41,7 @@ Add that filename to `.gitignore` if it is not already listed. Do not commit the
 symbol = name hitpoints COLOR {powerup chance%, ...}
 ```
 
-`{}` means no drops. Chances are independent and roll when the brick breaks. Colors are raylib names (`GREEN`, `ORANGE`, `RED`, and the other names in `color_from_name`). Current types:
+`{}` means no drops. `parse_drop_tail` in `powerups.odin` reads that group. Chances are independent and roll when the brick breaks. Colors are raylib names (`GREEN`, `ORANGE`, `RED`, and the other names in `color_from_name`). Current types:
 
 - `B` basic, 1 HP, green, no drops
 - `T` tough, 3 HP, orange, `multiply` 20%

@@ -3,6 +3,7 @@ package src
 import "core:fmt"
 import "core:math/rand"
 import "core:os"
+import "core:strconv"
 import rl "vendor:raylib"
 
 POWERUP_TYPES_PATH :: "src/powerup_types.txt"
@@ -101,6 +102,83 @@ load_powerup_types :: proc(path: string) -> [dynamic]Powerup_Type {
 		}
 	}
 	return types
+}
+
+parse_percent :: proc(tok: string) -> (i32, bool) {
+	s := tok
+	if len(s) > 0 && s[len(s) - 1] == '%' {
+		s = s[:len(s) - 1]
+	}
+	value, ok := strconv.parse_int(s, 10)
+	if !ok || value < 0 do return 0, false
+	if value > 100 do value = 100
+	return i32(value), true
+}
+
+// text is the `{wide 5%, multiply 3%}` group from a brick type, or empty.
+parse_drop_tail :: proc(text: string, powerups: []Powerup_Type) -> (drops: [MAX_DROPS]Brick_Drop, count: int, ok: bool) {
+	ok = true
+	body_src := trim_space(text)
+	if len(body_src) == 0 do return
+	if body_src[0] != '{' {
+		fmt.eprintf("Broken powerup list '%s'\n", body_src)
+		ok = false
+		return
+	}
+	close := -1
+	for i in 1..<len(body_src) {
+		if body_src[i] == '}' {
+			close = i
+			break
+		}
+	}
+	if close < 0 || trim_space(body_src[close + 1:]) != "" {
+		fmt.eprintf("Broken powerup list '%s'\n", body_src)
+		ok = false
+		return
+	}
+
+	body := body_src[1:close]
+	start := 0
+	for i := 0; i <= len(body); i += 1 {
+		if i < len(body) && body[i] != ',' do continue
+		piece := trim_space(body[start:i])
+		start = i + 1
+		if len(piece) == 0 do continue
+		if count >= MAX_DROPS {
+			fmt.eprintf("Too many powerups in '%s'\n", piece)
+			ok = false
+			return
+		}
+		name, next := read_token(piece, 0)
+		chance_tok, _ := read_token(piece, next)
+		if len(name) == 0 || len(chance_tok) == 0 {
+			fmt.eprintf("Powerup drop '%s' needs a name and a percent\n", piece)
+			ok = false
+			return
+		}
+		kind, known := powerup_kind_from_name(name)
+		if !known {
+			fmt.eprintf("Unknown powerup '%s'\n", name)
+			ok = false
+			return
+		}
+		powerup, found := find_powerup_type(powerups, kind)
+		if !found {
+			fmt.eprintf("Powerup '%s' is not listed in powerup_types.txt\n", name)
+			ok = false
+			return
+		}
+		chance, parsed := parse_percent(chance_tok)
+		if !parsed {
+			fmt.eprintf("Powerup '%s' has invalid chance '%s'\n", name, chance_tok)
+			ok = false
+			return
+		}
+		drops[count] = Brick_Drop{kind = kind, target = powerup.target, chance = chance}
+		count += 1
+	}
+	return
 }
 
 roll_percent :: proc(chance: i32) -> bool {

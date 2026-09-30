@@ -36,17 +36,37 @@ Ball :: struct {
 	alive:           bool,
 }
 
+// Played in order. Add a file here when a new level exists.
+LEVELS := [?]string{
+	"src/levels/lvl1.txt",
+	"src/levels/lvl2.txt",
+	"src/levels/lvl3.txt",
+}
+
+bricks_left :: proc(bricks: [dynamic]Brick) -> int {
+	n := 0
+	for brick in bricks {
+		if brick.hp > 0 do n += 1
+	}
+	return n
+}
+
+serve_ball :: proc(balls: ^[dynamic]Ball) {
+	clear(balls)
+	append(balls, Ball{x = SCW / 2, y = SCH / 2, speed_x = 1, speed_y = 1, alive = true})
+}
+
 game :: proc() {
 	rl.InitWindow(SCW, SCH, "RECT-DESTROYER!")
 
 	rl.SetTargetFPS(500)
 	rand.reset(u64(time.to_unix_nanoseconds(time.now())))
-	level1 := generateRects("src/lvl1.txt")
-	defer delete(level1)
+	level_index := 0
+	bricks := generateRects(LEVELS[level_index])
 
 	balls := make([dynamic]Ball)
 	defer delete(balls)
-	append(&balls, Ball{x = SCW / 2, y = SCH / 2, speed_x = 1, speed_y = 1, alive = true})
+	serve_ball(&balls)
 
 	falling := make([dynamic]Falling_Powerup)
 	defer delete(falling)
@@ -59,8 +79,7 @@ game :: proc() {
 		mouseLocation := rl.GetMousePosition()
 
 		if rl.IsMouseButtonPressed(rl.MouseButton.RIGHT) {
-			clear(&balls)
-			append(&balls, Ball{x = SCW / 2, y = SCH / 2, speed_x = 1, speed_y = 1, alive = true})
+			serve_ball(&balls)
 		}
 
 		pad_left := i32(padPos) - pad_w / 2
@@ -100,13 +119,24 @@ game :: proc() {
 				}
 			}
 
-			hit, broke, hp_before, brick_index := collideRects(&level1, ball)
+			hit, broke, hp_before, brick_index := collideRects(&bricks, ball)
 			if hit && hp_before > 1 && rl.GetTime() < multiply_until {
 				spawn_multiplied_balls(&balls, ball.x, ball.y)
 			}
 			if broke {
-				grant_brick_drops(level1[brick_index], &falling, &pad_w, &multiply_until)
+				grant_brick_drops(bricks[brick_index], &falling, &pad_w, &multiply_until)
 			}
+		}
+
+		// Next file when this board is empty. The last level just stays cleared.
+		if bricks_left(bricks) == 0 && level_index + 1 < len(LEVELS) {
+			level_index += 1
+			delete(bricks)
+			bricks = generateRects(LEVELS[level_index])
+			clear(&falling)
+			pad_w = PADW
+			multiply_until = 0
+			serve_ball(&balls)
 		}
 
 		update_falling_powerups(&falling, pad_left, 570, PADH, &pad_w, rl.GetFrameTime(), &multiply_until)
@@ -132,12 +162,13 @@ game :: proc() {
 			rl.DrawCircle(ball.x, ball.y, BALL_R, rl.RED)
 		}
 
-		renderRects(level1)
+		renderRects(bricks)
 		render_falling_powerups(falling)
 		render_multiply_timer(multiply_until)
 
 		rl.EndDrawing()
 	}
+	delete(bricks)
 	rl.CloseWindow()
 }
 
