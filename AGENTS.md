@@ -51,6 +51,7 @@ symbol = name hitpoints COLOR {powerup chance%, ...}
 - `I` powerup_rect_stick, 1 HP, brown, `stick` 100%
 - `L` powerup_rect_life, 1 HP, blue, `life` 100%
 - `M` powerup_rect_multiply, 1 HP, pink, `multiply` 100%
+- `F` powerup_rect_fast, 1 HP, gray, `fast` 100%
 - `T` tough_rect, 2 HP, yellow, `stick` 45% and `life` 20%
 - `S` strong_rect, 3 HP, red, `wide` 50% and `multiply` 30%
 - `U` super_rect, 10 HP, black, no drops
@@ -59,7 +60,7 @@ symbol = name hitpoints COLOR {powerup chance%, ...}
 
 ## What works
 
-- The game opens on a main menu. PLAY starts the first file in `src/levels`. LEVEL SELECT shows one button for each `.txt` file there, in number order. Choosing a level starts there. BACK returns to the main menu. QUIT closes the window. With no level files, PLAY does nothing.
+- The game opens on a main menu. PLAY starts the first file in `src/levels`. That folder is `lvl1.txt` through `lvl10.txt`. LEVEL SELECT shows one button for each `.txt` file there, in number order. Choosing a level starts there. BACK returns to the main menu. QUIT closes the window. With no level files, PLAY does nothing.
 - The playfield grows to the widest and tallest level and stays at least 800×600. The paddle top is 30 pixels above the bottom of that playfield. The frame is letterboxed into the window. Menus, the score, and the lives, stick, fast, and multiply labels scale with the playfield. Bricks, the paddle, the ball, and the playfield title stay at their original pixel sizes.
 - Clearing a board freezes it and opens a level-clear menu. The menu shows that level's score. NEXT LEVEL starts the next path at score 0 and keeps the remaining lives. MAIN MENU returns to the main menu. The last level's menu has MAIN MENU only.
 - When every ball is gone and no lives remain, the board freezes and a you-lost menu shows that level's score, MAIN MENU, and QUIT. MAIN MENU returns to the main menu. QUIT closes the window. A cleared board still opens the level-clear menu when the last brick and the last ball go on the same frame.
@@ -79,7 +80,7 @@ symbol = name hitpoints COLOR {powerup chance%, ...}
 
 ## Not built yet
 
-The header in `main.odin` still calls for 10 levels and sounds. There is no win screen. Item 3 in that header is not marked done. `powerup_rect_wide`, `powerup_rect_bomb`, `powerup_rect_stick`, `powerup_rect_life`, `powerup_rect_multiply`, and `super_rect` have no PNG, so those bricks use their config color.
+The header in `main.odin` still calls for sounds. There is no win screen. `powerup_rect_wide`, `powerup_rect_bomb`, `powerup_rect_stick`, `powerup_rect_life`, `powerup_rect_multiply`, `powerup_rect_fast`, and `super_rect` have no PNG, so those bricks use their config color.
 
 ## Quirks worth leaving alone unless asked
 
