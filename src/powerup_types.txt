@@ -4,5 +4,19 @@ wide PAD
 # Widen pad by '1'
 
 multiply BALL
-# every time ball hists rect with more than 1 hit point (balls * 2) spawns from the hit location
+# every time ball hists rect with more than 1 hit point (balls * 2) spawns from the hit location.
+# Each new ball has the opposite direction of the previous ball.
 # Lasts 10 seconds
+
+bomb RECT
+# When the rect is hit it will explode, doing 1 hit worth of damage the rects to the top, bottom, left, and right of it
+
+stick PAD
+# if ball lands on pad, it is stuck to pad until left click to launch ball.
+
+life PAD
+# adds 1 extra life.
+
+fast BALL
+# makes ball increase speed each bounce. Resets to 0 if ball is lost.
+# effects all live balls.

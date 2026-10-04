@@ -3,6 +3,7 @@ package src
 import "core:fmt"
 import "core:os"
 import "core:strconv"
+import "core:strings"
 import rl "vendor:raylib"
 
 RECT_W: i32 = 70; RECT_H: i32 = 50
@@ -20,10 +21,12 @@ Brick_Drop :: struct {
 }
 
 // One row in rect_types.txt. Level characters spawn this hit-point count, color, and drops.
+// texture is src/textures/<name>.png. A missing file leaves it empty and the color is drawn instead.
 Rect_Type :: struct {
 	symbol:     rune,
 	hp:         i32,
 	color:      rl.Color,
+	texture:    rl.Texture2D,
 	drops:      [MAX_DROPS]Brick_Drop,
 	drop_count: int,
 }
@@ -35,9 +38,20 @@ Brick :: struct {
 	kind:       rune,
 	hp, max_hp: i32,
 	color:      rl.Color,
+	texture:    rl.Texture2D,
 	drops:      [MAX_DROPS]Brick_Drop,
 	drop_count: int,
 }
+
+// Loaded once and reused across levels. The name is the rect_types.txt name.
+Rect_Texture :: struct {
+	name:    string,
+	texture: rl.Texture2D,
+}
+
+rect_textures: [dynamic]Rect_Texture
+crack_textures: [3]rl.Texture2D
+crack_textures_loaded: bool
 
 color_from_name :: proc(name: string) -> (rl.Color, bool) {
 	switch name {
@@ -69,10 +83,28 @@ color_from_name :: proc(name: string) -> (rl.Color, bool) {
 
 default_rect_color :: proc(symbol: rune) -> rl.Color {
 	switch symbol {
-	case 'B': return rl.GREEN
-	case 'T': return rl.ORANGE
+	case 'B': return rl.ORANGE
+	case 'W': return rl.GREEN
+	case 'O': return rl.PURPLE
+	case 'I': return rl.BROWN
+	case 'L': return rl.BLUE
+	case 'M': return rl.PINK
+	case 'T': return rl.YELLOW
+	case 'S': return rl.RED
+	case 'U': return rl.BLACK
 	case: return rl.WHITE
 	}
+}
+
+// Cells are placed on a fixed step, so a side neighbor shares one axis and differs by one step on the other.
+orthogonal_bricks :: proc(a, b: Brick) -> bool {
+	dx := a.x - b.x
+	if dx < 0 do dx = -dx
+	dy := a.y - b.y
+	if dy < 0 do dy = -dy
+	step_x := RECT_W + RECT_GAP
+	step_y := RECT_H + RECT_GAP
+	return (dx == step_x && dy == 0) || (dx == 0 && dy == step_y)
 }
 
 skip_ws :: proc(s: string, index: int) -> int {
@@ -170,14 +202,110 @@ add_rect_type :: proc(types: ^[dynamic]Rect_Type, line: string, powerups: []Powe
 		symbol = symbol,
 		hp = hp,
 		color = color,
+		texture = texture_for_rect_name(name),
 		drops = drops,
 		drop_count = drop_count,
 	})
 }
 
+texture_path :: proc(name: string, buf: ^[128]byte) -> cstring {
+	prefix := "src/textures/"
+	suffix := ".png"
+	n := 0
+	for ch in prefix {
+		buf[n] = u8(ch)
+		n += 1
+	}
+	for ch in name {
+		buf[n] = u8(ch)
+		n += 1
+	}
+	for ch in suffix {
+		buf[n] = u8(ch)
+		n += 1
+	}
+	buf[n] = 0
+	return cstring(&buf[0])
+}
+
+load_texture_file :: proc(path: cstring) -> rl.Texture2D {
+	tex := rl.LoadTexture(path)
+	if tex.id == 0 {
+		fmt.eprintf("Failed to load texture '%s'\n", path)
+		return {}
+	}
+	rl.SetTextureFilter(tex, .POINT)
+	return tex
+}
+
+ensure_crack_textures :: proc() {
+	if crack_textures_loaded || !rl.IsWindowReady() do return
+	crack_textures_loaded = true
+	crack_textures[0] = load_texture_file("src/textures/crack_0.png")
+	crack_textures[1] = load_texture_file("src/textures/crack_1.png")
+	crack_textures[2] = load_texture_file("src/textures/crack_2.png")
+}
+
+// The type name is the file stem: basic_rect loads src/textures/basic_rect.png.
+// A missing file is cached, so a later level does not warn again. The flat color is drawn instead.
+texture_for_rect_name :: proc(name: string) -> rl.Texture2D {
+	ensure_crack_textures()
+	if !rl.IsWindowReady() do return {}
+	for entry in rect_textures {
+		if entry.name == name do return entry.texture
+	}
+	if len(name) == 0 || len(name) > 100 do return {}
+
+	buf: [128]byte
+	tex := load_texture_file(texture_path(name, &buf))
+	key := strings.clone(name) or_else ""
+	append(&rect_textures, Rect_Texture{name = key, texture = tex})
+	return tex
+}
+
+ink_for :: proc(c: rl.Color) -> rl.Color {
+	if int(c.r) + int(c.g) + int(c.b) < 200 do return rl.WHITE
+	return rl.BLACK
+}
+
+unload_rect_textures :: proc() {
+	for entry in rect_textures {
+		if entry.texture.id != 0 do rl.UnloadTexture(entry.texture)
+		delete(entry.name)
+	}
+	delete(rect_textures)
+	if crack_textures_loaded {
+		for tex in crack_textures {
+			if tex.id != 0 do rl.UnloadTexture(tex)
+		}
+		crack_textures = {}
+		crack_textures_loaded = false
+	}
+}
+
+draw_brick_texture :: proc(tex: rl.Texture2D, x, y: i32) {
+	src := rl.Rectangle{0, 0, f32(tex.width), f32(tex.height)}
+	dst := rl.Rectangle{f32(x), f32(y), f32(RECT_W), f32(RECT_H)}
+	rl.DrawTexturePro(tex, src, dst, {}, 0, rl.WHITE)
+}
+
+// None at full health. crack_0, crack_1, then crack_2 as more of the hit points are gone.
+crack_for_brick :: proc(brick: Brick) -> (rl.Texture2D, bool) {
+	if !crack_textures_loaded || brick.max_hp <= 1 || brick.hp <= 0 || brick.hp >= brick.max_hp {
+		return {}, false
+	}
+	lost_pct := int((brick.max_hp - brick.hp) * 100 / brick.max_hp)
+	index := 0
+	if lost_pct > 66 do index = 2
+	else if lost_pct > 33 do index = 1
+	tex := crack_textures[index]
+	if tex.id == 0 do return {}, false
+	return tex, true
+}
+
 load_rect_types :: proc(path: string, powerups: []Powerup_Type) -> [dynamic]Rect_Type {
 	types := make([dynamic]Rect_Type)
-	data, err := os.read_entire_file(path, context.allocator)
+	data, err := os.read_entire_file_or_err(path, context.allocator)
 	if err != nil {
 		fmt.eprintf("Failed to read '%s': %v\n", path, err)
 		return types
@@ -240,7 +368,7 @@ generateRects :: proc(level: string) -> [dynamic]Brick {
 	types := load_rect_types(RECT_TYPES_PATH, powerups[:])
 	defer delete(types)
 
-	inData, err := os.read_entire_file(level, context.allocator)
+	inData, err := os.read_entire_file_or_err(level, context.allocator)
 	if err != nil {
 		fmt.eprintf("Failed to read '%s': %v\n", level, err)
 		return {}
@@ -288,6 +416,7 @@ generateRects :: proc(level: string) -> [dynamic]Brick {
 					hp = t.hp,
 					max_hp = t.hp,
 					color = t.color,
+					texture = t.texture,
 					drops = t.drops,
 					drop_count = t.drop_count,
 				})
@@ -301,13 +430,33 @@ generateRects :: proc(level: string) -> [dynamic]Brick {
 renderRects :: proc(bricks: [dynamic]Brick) {
 	for brick in bricks {
 		if brick.hp <= 0 do continue
-		rl.DrawRectangle(brick.x, brick.y, RECT_W, RECT_H, brick_draw_color(brick))
-		if brick.max_hp > 1 {
-			buf: [12]byte
-			text := format_hp(brick.hp, &buf)
+		if brick.texture.id != 0 {
+			draw_brick_texture(brick.texture, brick.x, brick.y)
+			if crack, ok := crack_for_brick(brick); ok {
+				draw_brick_texture(crack, brick.x, brick.y)
+			}
+		} else {
+			fill := brick_draw_color(brick)
+			rl.DrawRectangle(brick.x, brick.y, RECT_W, RECT_H, fill)
+			ink := ink_for(fill)
+			// A black brick matches the background, so the outline is what shows the cell.
+			if int(fill.r) + int(fill.g) + int(fill.b) < 80 {
+				rl.DrawRectangleLines(brick.x, brick.y, RECT_W, RECT_H, rl.GRAY)
+			}
 			size: i32 = 24
-			width := rl.MeasureText(text, size)
-			rl.DrawText(text, brick.x + (RECT_W - width) / 2, brick.y + (RECT_H - size) / 2, size, rl.BLACK)
+			if brick.max_hp > 1 {
+				buf: [12]byte
+				text := format_hp(brick.hp, &buf)
+				width := rl.MeasureText(text, size)
+				rl.DrawText(text, brick.x + (RECT_W - width) / 2, brick.y + (RECT_H - size) / 2, size, ink)
+			} else {
+				mark: [2]byte
+				mark[0] = u8(brick.kind)
+				mark[1] = 0
+				text := cstring(&mark[0])
+				width := rl.MeasureText(text, size)
+				rl.DrawText(text, brick.x + (RECT_W - width) / 2, brick.y + (RECT_H - size) / 2, size, ink)
+			}
 		}
 	}
 }
@@ -390,19 +539,20 @@ collideRects :: proc(bricks: ^[dynamic]Brick, ball: ^Ball) -> (hit: bool, broke:
 
 	if sep_x < 0 {
 		ball.x = left - BALL_R
-		if ball.speed_x > 0 do ball.speed_x = -ball.speed_x
+		if ball.vx > 0 do ball.vx = -ball.vx
 	} else if sep_x > 0 {
 		ball.x = right + BALL_R
-		if ball.speed_x < 0 do ball.speed_x = -ball.speed_x
+		if ball.vx < 0 do ball.vx = -ball.vx
 	}
 
 	if sep_y < 0 {
 		ball.y = top - BALL_R
-		if ball.speed_y > 0 do ball.speed_y = -ball.speed_y
+		if ball.vy > 0 do ball.vy = -ball.vy
 	} else if sep_y > 0 {
 		ball.y = bot + BALL_R
-		if ball.speed_y < 0 do ball.speed_y = -ball.speed_y
+		if ball.vy < 0 do ball.vy = -ball.vy
 	}
+	note_ball_velocity(ball)
 
 	if brick.hp > 0 do brick.hp -= 1
 	return true, brick.hp <= 0, hp_before, brick_index
