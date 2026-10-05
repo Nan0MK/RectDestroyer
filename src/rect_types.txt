@@ -2,12 +2,12 @@
 # 100% means rect always drops 1 of the designated powerups on break. lower % means less often.
 # Percentages do not determine the amount of drops.
 B = basic_rect 1 ORANGE {}
-W = powerup_rect_wide 1 GREEN {wide 100%}
-O = powerup_rect_bomb 1 PURPLE {bomb 100%}
-I = powerup_rect_stick 1 BROWN {stick 100%}
-L = powerup_rect_life 1 BLUE {life 100%}
-M = powerup_rect_multiply 1 PINK {multiply 100%}
-F = powerup_rect_fast 1 GRAY {fast 100%}
+W = rect_wide 1 GREEN {wide 100%}
+O = rect_bomb 1 PURPLE {bomb 100%}
+I = rect_stick 1 BROWN {stick 100%}
+L = rect_life 1 BLUE {life 100%}
+M = rect_multiply 1 PINK {multiply 100%}
+F = rect_fast 1 GRAY {fast 100%}
 T = tough_rect 2 YELLOW {stick 45%, life 20%}
 S = strong_rect 3 RED {wide 50%, multiply 30%}
 U = super_rect 10 BLACK {}

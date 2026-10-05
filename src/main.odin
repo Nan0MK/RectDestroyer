@@ -1,6 +1,6 @@
 ///RECT-DESTROYER!
 // A Brickbreaker clone with:
-// 10 levels,
+// 15 levels,
 // 5 powerups,
 // main menu,
 // sounds,
@@ -30,7 +30,7 @@ SCREEN_LEFT :: i32(0)
 SCREEN_RIGHT: i32 = WINDOW_W
 
 // Pad. Draw, powerup catches, and ball collision all use this rectangle.
-PADW: i32 = 150
+PADW: i32 = 200
 PADH: i32 = 20
 BOTTOM_MARGIN :: 30
 PAD_TOP: i32 = WINDOW_H - BOTTOM_MARGIN
@@ -42,8 +42,8 @@ PLAY_LANE :: 220
 // Menus and the status labels use this. Bricks, the paddle, the ball, and the playfield title do not.
 ui_scale: f32 = 1
 
-// Ball
-BALL_R :: 10
+// Ball. The drawn box is this diameter, and the hit shape is the circle inside it.
+BALL_R :: 12
 
 // One destroyed brick adds BRICK_SCORE * multiplier. All of it is integer.
 // multiplier = SCORE_SCALE / elapsed_ns - elapsed_ns / NS_PER_MINUTE.
@@ -393,21 +393,50 @@ collide_pad :: proc(ball: ^Ball, pad_left, pad_top, pad_w, pad_h: i32, pad_vx: f
 	note_ball_velocity(ball)
 }
 
+// src/textures/ball.png, drawn across the collision circle. A missing file keeps the red circle.
+ball_tex: rl.Texture2D
+ball_tex_loaded: bool
+
+ensure_ball_texture :: proc() {
+	if ball_tex_loaded || !rl.IsWindowReady() do return
+	ball_tex_loaded = true
+	ball_tex = load_texture_file("src/textures/ball.png")
+}
+
+unload_ball_texture :: proc() {
+	if ball_tex.id != 0 do rl.UnloadTexture(ball_tex)
+	ball_tex = {}
+	ball_tex_loaded = false
+}
+
+draw_ball :: proc(ball: Ball) {
+	ensure_ball_texture()
+	if ball_tex.id != 0 {
+		size: i32 = BALL_R * 2
+		draw_texture_rect(ball_tex, ball.x - BALL_R, ball.y - BALL_R, size, size)
+		return
+	}
+	rl.DrawCircle(ball.x, ball.y, BALL_R, rl.RED)
+}
+
 draw_playfield :: proc(bricks: [dynamic]Brick, balls: [dynamic]Ball, falling: [dynamic]Falling_Powerup, pad_left: i32, mods: Power_Mods) {
-	rl.DrawText("RECT-DESTROYER!", 190, 200, 20, rl.WHITE)
+	render_life_points(mods.lives)
+	draw_text("RECT-DESTROYER!", 190, 200, 20, rl.WHITE)
 	rl.DrawRectangle(pad_left, PAD_TOP, mods.pad_w, PADH, rl.WHITE)
 	// rl.DrawRectangle(PAD_LEFT, PAD_TOP, 12, 12, rl.GREEN)
 	// rl.DrawRectangle(PAD_RIGHT, PAD_TOP, 12, 12, rl.GREEN)
 	// rl.DrawRectangle(PAD_LEFT, PAD_BOT, 12, 12, rl.GREEN)
 	// rl.DrawRectangle(PAD_RIGHT, PAD_BOT, 12, 12, rl.GREEN)
 
+	renderRects(bricks)
 	for ball in balls {
 		if !ball.alive do continue
-		rl.DrawCircle(ball.x, ball.y, BALL_R, rl.RED)
+		render_ball_trail(ball)
+		draw_ball(ball)
 	}
-
-	renderRects(bricks)
+	render_brick_chips()
 	render_falling_powerups(falling)
+	render_animations()
 	render_multiply_timer(mods.multiply_until)
 	render_power_status(mods)
 }
@@ -501,8 +530,8 @@ draw_score :: proc(score: i64) {
 	text := format_score_label(score, &buf)
 	size := px(20)
 	margin := px(16)
-	width := rl.MeasureText(text, size)
-	rl.DrawText(text, SCW - width - margin, margin, size, rl.WHITE)
+	width := measure_text(text, size)
+	draw_text(text, SCW - width - margin, margin, size, rl.WHITE)
 }
 
 any_ball_alive :: proc(balls: [dynamic]Ball) -> bool {
@@ -561,6 +590,7 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 		if s < steps_y do ball.y += ay
 
 		if ball.y > SCH {
+			play_ball_lost(ball.x)
 			lose_ball(ball, balls, mods)
 			return
 		}
@@ -602,6 +632,7 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 
 		hit, broke, hp_before, brick_index := collideRects(bricks, ball)
 		if hit {
+			spawn_brick_chips(bricks[brick_index], broke, ball.x, ball.y)
 			if hp_before > 1 && rl.GetTime() < mods.multiply_until {
 				spawn_multiplied_balls(balls, ball.x, ball.y)
 			}
@@ -619,16 +650,22 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 }
 
 // Load one LEVELS path and stick a ball to the paddle. The level-clear menu loads the next path.
-// Lives carry into that next path. A start from the menu clears them.
+// Lives carry into that next path. A start from the menu sets them to 1.
 start_level :: proc(index: int, bricks: ^[dynamic]Brick, balls: ^[dynamic]Ball, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods, reset_lives: bool, pad_left: i32) {
 	if index < 0 || index >= len(LEVELS) do return
 	delete(bricks^)
 	bricks^ = generateRects(LEVELS[index])
 	clear(falling)
+	clear_brick_chips()
+	clear_animations()
 	lives := mods.lives
 	mods^ = {}
 	mods.pad_w = PADW
-	if !reset_lives do mods.lives = lives
+	if reset_lives {
+		mods.lives = START_LIVES
+	} else {
+		mods.lives = lives
+	}
 	serve_ball(balls, pad_left, mods.pad_w)
 }
 
@@ -700,17 +737,21 @@ game :: proc() {
 			for i in 0..<ball_count {
 				step_ball(&balls[i], &balls, &bricks, &falling, &mods, &score, elapsed, pad_left, pad_vx)
 			}
+			update_brick_chips(rl.GetFrameTime())
 
 			// The clear menu shows this level's score. Next Level is what loads the following path.
 			if bricks_left(bricks) == 0 {
 				next = .LEVEL_END
 			} else {
 				if !any_ball_alive(balls) {
+					// The life in play is one of the count. 0 is a loss, so the last life does not serve another ball.
+					mods.lives -= 1
+					play_life_lost(int(mods.lives))
 					if mods.lives > 0 {
-						mods.lives -= 1
 						mods.speed_bonus = 0
 						serve_ball(&balls, pad_left, mods.pad_w)
 					} else {
+						mods.lives = 0
 						next = .LOST
 					}
 				}
@@ -732,10 +773,14 @@ game :: proc() {
 		}
 		screen = next
 		if screen != .PLAY do pad_motion_reset(&pad_motion, pad_left)
+		if screen == .PLAY || screen == .LEVEL_END || screen == .LOST {
+			update_animations(rl.GetFrameTime(), screen == .PLAY)
+		}
 
 		// ___
 		rl.BeginTextureMode(game_target)
 		rl.ClearBackground(rl.BLACK)
+		draw_space_background()
 
 		if screen == .PLAY || screen == .PAUSE || screen == .LEVEL_END || screen == .LOST {
 			if screen == .PLAY {
@@ -757,7 +802,14 @@ game :: proc() {
 		rl.EndDrawing()
 	}
 	delete(bricks)
+	free_brick_chips()
 	unload_rect_textures()
+	unload_powerup_textures()
+	unload_ball_texture()
+	unload_life_point_texture()
+	unload_animations()
+	unload_space_background()
+	unload_game_font()
 	rl.UnloadRenderTexture(game_target)
 	rl.CloseWindow()
 }

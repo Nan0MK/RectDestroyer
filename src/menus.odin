@@ -11,7 +11,8 @@ Screen :: enum {
 	LOST,
 }
 
-MENU_BTN_W: i32 = 280
+// "LEVEL SELECT" is 12 cells in the sprite font at 24px, which needs this width.
+MENU_BTN_W: i32 = 320
 MENU_BTN_H: i32 = 56
 MENU_BTN_GAP: i32 = 20
 LEVEL_BTN_H: i32 = 52
@@ -36,13 +37,13 @@ draw_button :: proc(label: cstring, x, y, w, h: i32, mouse: rl.Vector2) {
 	rl.DrawRectangle(x, y, w, h, fill)
 	rl.DrawRectangleLines(x, y, w, h, rl.WHITE)
 	size := px(24)
-	tw := rl.MeasureText(label, size)
-	rl.DrawText(label, x + (w - tw) / 2, y + (h - size) / 2, size, ink)
+	tw := measure_text(label, size)
+	draw_text(label, x + (w - tw) / 2, y + (h - size) / 2, size, ink)
 }
 
 draw_centered_text :: proc(text: cstring, y, size: i32, color: rl.Color) {
-	tw := rl.MeasureText(text, size)
-	rl.DrawText(text, (SCW - tw) / 2, y, size, color)
+	tw := measure_text(text, size)
+	draw_text(text, (SCW - tw) / 2, y, size, color)
 }
 
 main_button_rect :: proc(index: int) -> (x, y, w, h: i32) {
@@ -216,8 +217,8 @@ draw_menus :: proc(screen: Screen, mouse: rl.Vector2, score: i64, playing_level:
 		buf: [40]byte
 		text := format_score_label(score, &buf)
 		score_size := px(32)
-		tw := rl.MeasureText(text, score_size)
-		rl.DrawText(text, (SCW - tw) / 2, px(185), score_size, rl.WHITE)
+		tw := measure_text(text, score_size)
+		draw_text(text, (SCW - tw) / 2, px(185), score_size, rl.WHITE)
 		if playing_level + 1 < len(LEVELS) {
 			next_x, next_y, next_w, next_h := main_button_rect(0)
 			menu_x, menu_y, menu_w, menu_h := main_button_rect(1)
@@ -234,8 +235,8 @@ draw_menus :: proc(screen: Screen, mouse: rl.Vector2, score: i64, playing_level:
 		buf: [40]byte
 		text := format_score_label(score, &buf)
 		score_size := px(32)
-		tw := rl.MeasureText(text, score_size)
-		rl.DrawText(text, (SCW - tw) / 2, px(185), score_size, rl.WHITE)
+		tw := measure_text(text, score_size)
+		draw_text(text, (SCW - tw) / 2, px(185), score_size, rl.WHITE)
 		menu_x, menu_y, menu_w, menu_h := main_button_rect(0)
 		quit_x, quit_y, quit_w, quit_h := main_button_rect(1)
 		draw_button("MAIN MENU", menu_x, menu_y, menu_w, menu_h, mouse)

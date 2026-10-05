@@ -1,5 +1,5 @@
-TB          WW    TB
-TB   O            TB
+TB     F    WW    TB
+TB   O   F        TB
 TBM     TTTT O    TB
 TB     TSSSST     TB
 TB    TTSUUSTT O  TB

@@ -283,10 +283,15 @@ unload_rect_textures :: proc() {
 	}
 }
 
-draw_brick_texture :: proc(tex: rl.Texture2D, x, y: i32) {
+// Nearest-neighbor scale. Brick cells, the ball, and falling drops all use this.
+draw_texture_rect :: proc(tex: rl.Texture2D, x, y, w, h: i32) {
 	src := rl.Rectangle{0, 0, f32(tex.width), f32(tex.height)}
-	dst := rl.Rectangle{f32(x), f32(y), f32(RECT_W), f32(RECT_H)}
+	dst := rl.Rectangle{f32(x), f32(y), f32(w), f32(h)}
 	rl.DrawTexturePro(tex, src, dst, {}, 0, rl.WHITE)
+}
+
+draw_brick_texture :: proc(tex: rl.Texture2D, x, y: i32) {
+	draw_texture_rect(tex, x, y, RECT_W, RECT_H)
 }
 
 // None at full health. crack_0, crack_1, then crack_2 as more of the hit points are gone.
@@ -447,15 +452,15 @@ renderRects :: proc(bricks: [dynamic]Brick) {
 			if brick.max_hp > 1 {
 				buf: [12]byte
 				text := format_hp(brick.hp, &buf)
-				width := rl.MeasureText(text, size)
-				rl.DrawText(text, brick.x + (RECT_W - width) / 2, brick.y + (RECT_H - size) / 2, size, ink)
+				width := measure_text(text, size)
+				draw_text(text, brick.x + (RECT_W - width) / 2, brick.y + (RECT_H - size) / 2, size, ink)
 			} else {
 				mark: [2]byte
 				mark[0] = u8(brick.kind)
 				mark[1] = 0
 				text := cstring(&mark[0])
-				width := rl.MeasureText(text, size)
-				rl.DrawText(text, brick.x + (RECT_W - width) / 2, brick.y + (RECT_H - size) / 2, size, ink)
+				width := measure_text(text, size)
+				draw_text(text, brick.x + (RECT_W - width) / 2, brick.y + (RECT_H - size) / 2, size, ink)
 			}
 		}
 	}
@@ -537,19 +542,21 @@ collideRects :: proc(bricks: ^[dynamic]Brick, ball: ^Ball) -> (hit: bool, broke:
 		sep_y = 1 if hit_dy > 0 else -1
 	}
 
+	// One pixel past the circle's edge. Sitting exactly on the face still counts as a hit,
+	// so a shallow slide along that face would spend a hit point on every later step.
 	if sep_x < 0 {
-		ball.x = left - BALL_R
+		ball.x = left - BALL_R - 1
 		if ball.vx > 0 do ball.vx = -ball.vx
 	} else if sep_x > 0 {
-		ball.x = right + BALL_R
+		ball.x = right + BALL_R + 1
 		if ball.vx < 0 do ball.vx = -ball.vx
 	}
 
 	if sep_y < 0 {
-		ball.y = top - BALL_R
+		ball.y = top - BALL_R - 1
 		if ball.vy > 0 do ball.vy = -ball.vy
 	} else if sep_y > 0 {
-		ball.y = bot + BALL_R
+		ball.y = bot + BALL_R + 1
 		if ball.vy < 0 do ball.vy = -ball.vy
 	}
 	note_ball_velocity(ball)

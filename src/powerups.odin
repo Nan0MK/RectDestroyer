@@ -12,15 +12,22 @@ POWERUP_TYPES_PATH :: "src/powerup_types.txt"
 WIDE_STEP: i32 = 50
 MULTIPLY_SECONDS :: 10.0
 MAX_BALLS :: 32
+// The life in play counts. Reaching 0 is a loss.
+START_LIVES: i32 = 1
+LIFE_POINT_SIZE: i32 = 48
+LIFE_POINT_GAP: i32 = 8
+LIFE_POINT_MARGIN: i32 = 16
 
 // Slow compared with the ball, which moves one pixel per frame until fast raises it.
+// The drop art is 16×16. It is drawn at 2×, the same scale as a brick, and this box is both the picture and the catch.
 DROP_SPEED :: 90.0
-DROP_W :: 28
-DROP_H :: 16
+DROP_W :: 32
+DROP_H :: 32
 
-// fast adds 1 to every living ball's faster axis on each bounce, up to MAX_BALL_SPEED.
-// A paddle launch without fast stops at NORMAL_MAX_SPEED. 8 keeps the per-pixel steps short.
-MAX_BALL_SPEED: i32 = 8
+// fast raises a living ball's faster axis up to 1 + bonus on each bounce, and stops at MAX_BALL_SPEED.
+// A ball already above that floor keeps its speed.
+// A paddle launch without fast stops at NORMAL_MAX_SPEED.
+MAX_BALL_SPEED: i32 = 267
 NORMAL_MAX_SPEED: i32 = 3
 
 Powerup_Target :: enum {
@@ -268,6 +275,7 @@ consider_bomb :: proc(bricks: ^[dynamic]Brick, index: int, exploded: []bool, que
 	if !roll_percent(chance) do return
 	exploded[index] = true
 	append(queue, index)
+	play_explosion(bricks[index].x, bricks[index].y)
 }
 
 damage_from_blast :: proc(bricks: ^[dynamic]Brick, index: int, exploded: []bool, queue: ^[dynamic]int, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods, score: ^i64, elapsed_ns: i64) {
@@ -304,6 +312,20 @@ explode_from_hit :: proc(bricks: ^[dynamic]Brick, origin: int, falling: ^[dynami
 	}
 }
 
+// Faster axis of the live velocity. Integer speeds fill in when both floats are still 0.
+ball_peak_speed :: proc(ball: Ball) -> f32 {
+	vx := ball.vx
+	vy := ball.vy
+	if vx == 0 && vy == 0 {
+		vx = f32(ball.speed_x)
+		vy = f32(ball.speed_y)
+	}
+	ax := abs(vx)
+	ay := abs(vy)
+	if ay > ax do return ay
+	return ax
+}
+
 // Scales the velocity so the faster axis is `mag`. The angle stays.
 // A ball that only has the integer speeds filled in, as the tests do, copies those in first.
 set_speed_mag :: proc(ball: ^Ball, mag: i32) {
@@ -329,28 +351,29 @@ set_speed_mag :: proc(ball: ^Ball, mag: i32) {
 	note_ball_velocity(ball)
 }
 
-reset_live_speeds :: proc(balls: ^[dynamic]Ball) {
-	for i in 0..<len(balls) {
-		if balls[i].alive do set_speed_mag(&balls[i], 1)
-	}
-}
-
-// fast shares one speed across every living ball. Losing a ball turns fast off and clears the bonus.
+// Each bounce raises the shared floor by 1. Balls under that floor come up to it.
+// A ball already faster keeps its speed, so one paddle hit is not pulled down by the other balls.
 on_speed_bounce :: proc(balls: ^[dynamic]Ball, mods: ^Power_Mods) {
 	if !mods.fast do return
 	if mods.speed_bonus + 1 < MAX_BALL_SPEED do mods.speed_bonus += 1
 	mag := 1 + mods.speed_bonus
+	floor := f32(mag)
 	for i in 0..<len(balls) {
-		if balls[i].alive do set_speed_mag(&balls[i], mag)
+		if !balls[i].alive do continue
+		if ball_peak_speed(balls[i]) + 0.001 < floor {
+			set_speed_mag(&balls[i], mag)
+		}
 	}
 }
 
+// A ball that leaves the playfield leaves every other ball at its current speed.
+// Fast and the speed bonus clear when the last ball is gone.
 lose_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, mods: ^Power_Mods) {
 	ball.alive = false
 	ball.stuck = false
+	if any_ball_alive(balls^) do return
 	mods.fast = false
 	mods.speed_bonus = 0
-	reset_live_speeds(balls)
 }
 
 rects_overlap :: proc(ax, ay, aw, ah, bx, by, bw, bh: i32) -> bool {
@@ -400,6 +423,40 @@ spawn_multiplied_balls :: proc(balls: ^[dynamic]Ball, hit_x, hit_y: i32) {
 	}
 }
 
+// src/textures/powerup_<name>.png. Loaded once and reused. A missing file keeps the flat mark.
+powerup_textures: [Powerup_Kind]rl.Texture2D
+powerup_textures_loaded: bool
+
+powerup_texture_stem :: proc(kind: Powerup_Kind) -> string {
+	switch kind {
+	case .WIDE: return "powerup_wide"
+	case .MULTIPLY: return "powerup_multiply"
+	case .BOMB: return "powerup_bomb"
+	case .STICK: return "powerup_stick"
+	case .LIFE: return "powerup_life"
+	case .FAST: return "powerup_fast"
+	}
+	return ""
+}
+
+ensure_powerup_textures :: proc() {
+	if powerup_textures_loaded || !rl.IsWindowReady() do return
+	powerup_textures_loaded = true
+	for kind in Powerup_Kind {
+		buf: [128]byte
+		powerup_textures[kind] = load_texture_file(texture_path(powerup_texture_stem(kind), &buf))
+	}
+}
+
+unload_powerup_textures :: proc() {
+	if !powerup_textures_loaded do return
+	for tex in powerup_textures {
+		if tex.id != 0 do rl.UnloadTexture(tex)
+	}
+	powerup_textures = {}
+	powerup_textures_loaded = false
+}
+
 powerup_mark :: proc(kind: Powerup_Kind) -> (text: cstring, fill: rl.Color) {
 	switch kind {
 	case .WIDE: text, fill = "W", rl.GOLD
@@ -413,14 +470,20 @@ powerup_mark :: proc(kind: Powerup_Kind) -> (text: cstring, fill: rl.Color) {
 }
 
 render_falling_powerups :: proc(drops: [dynamic]Falling_Powerup) {
+	ensure_powerup_textures()
 	for drop in drops {
 		left := i32(drop.x) - DROP_W / 2
 		top := i32(drop.y) - DROP_H / 2
+		tex := powerup_textures[drop.kind]
+		if tex.id != 0 {
+			draw_texture_rect(tex, left, top, DROP_W, DROP_H)
+			continue
+		}
 		text, fill := powerup_mark(drop.kind)
 		rl.DrawRectangle(left, top, DROP_W, DROP_H, fill)
 		size: i32 = 16
-		width := rl.MeasureText(text, size)
-		rl.DrawText(text, left + (DROP_W - width) / 2, top + (DROP_H - size) / 2, size, rl.BLACK)
+		width := measure_text(text, size)
+		draw_text(text, left + (DROP_W - width) / 2, top + (DROP_H - size) / 2, size, rl.BLACK)
 	}
 }
 
@@ -454,6 +517,49 @@ format_prefixed :: proc(prefix: string, value: i32, buf: ^[24]byte) -> cstring {
 	return cstring(&buf[0])
 }
 
+life_point_tex: rl.Texture2D
+life_point_loaded: bool
+
+ensure_life_point_texture :: proc() {
+	if life_point_loaded || !rl.IsWindowReady() do return
+	life_point_loaded = true
+	life_point_tex = load_texture_file("src/textures/life_point.png")
+}
+
+unload_life_point_texture :: proc() {
+	if life_point_tex.id != 0 do rl.UnloadTexture(life_point_tex)
+	life_point_tex = {}
+	life_point_loaded = false
+}
+
+// One icon per life, along the lower left. Icons wrap upward once a row fills the width.
+life_point_origin :: proc(index: int) -> (x, y: i32) {
+	step := LIFE_POINT_SIZE + LIFE_POINT_GAP
+	cols := (SCW - LIFE_POINT_MARGIN * 2) / step
+	if cols < 1 do cols = 1
+	slot := index
+	if slot < 0 do slot = 0
+	col := i32(slot % int(cols))
+	row := i32(slot / int(cols))
+	x = LIFE_POINT_MARGIN + col * step
+	y = SCH - LIFE_POINT_MARGIN - LIFE_POINT_SIZE - row * step
+	return
+}
+
+// Drawn before the board so the playfield covers them.
+render_life_points :: proc(lives: i32) {
+	if lives < 1 do return
+	ensure_life_point_texture()
+	for i in 0..<int(lives) {
+		x, y := life_point_origin(i)
+		if life_point_tex.id != 0 {
+			draw_texture_rect(life_point_tex, x, y, LIFE_POINT_SIZE, LIFE_POINT_SIZE)
+		} else {
+			rl.DrawRectangle(x, y, LIFE_POINT_SIZE, LIFE_POINT_SIZE, rl.Color{56, 138, 255, 255})
+		}
+	}
+}
+
 // Lives sit under the x2 timer. Stick and fast are drawn only while they are on.
 render_power_status :: proc(mods: Power_Mods) {
 	y := px(40)
@@ -462,16 +568,16 @@ render_power_status :: proc(mods: Power_Mods) {
 	left := px(16)
 	buf: [24]byte
 	lives := format_prefixed("LIVES ", mods.lives, &buf)
-	rl.DrawText(lives, left, y, size, rl.SKYBLUE)
+	draw_text(lives, left, y, size, rl.SKYBLUE)
 	y += step
 	if mods.stick {
-		rl.DrawText("STICK", left, y, size, rl.BEIGE)
+		draw_text("STICK", left, y, size, rl.BEIGE)
 		y += step
 	}
 	if mods.fast {
 		fast_buf: [24]byte
 		label := format_prefixed("FAST ", 1 + mods.speed_bonus, &fast_buf)
-		rl.DrawText(label, left, y, size, rl.ORANGE)
+		draw_text(label, left, y, size, rl.ORANGE)
 	}
 }
 
@@ -493,5 +599,5 @@ render_multiply_timer :: proc(until: f64) {
 	buf[n] = u8('0') + u8(secs % 10)
 	n += 1
 	buf[n] = 0
-	rl.DrawText(cstring(&buf[0]), px(16), px(16), px(20), rl.YELLOW)
+	draw_text(cstring(&buf[0]), px(16), px(16), px(20), rl.YELLOW)
 }

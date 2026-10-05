@@ -101,6 +101,48 @@ test_orthogonal_and_bomb_chain :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_graze_spends_one_hit_point :: proc(t: ^testing.T) {
+	bricks := make([dynamic]Brick)
+	defer delete(bricks)
+	append(&bricks, Brick{x = 0, y = 0, hp = 10, max_hp = 10})
+
+	// Exactly on the right face, with a shallow velocity into the brick.
+	ball := Ball{
+		x = RECT_W + BALL_R,
+		y = RECT_H / 2,
+		vx = -0.2,
+		vy = 1,
+		alive = true,
+	}
+	hit, broke, hp_before, index := collideRects(&bricks, &ball)
+	testing.expect(t, hit)
+	testing.expect(t, !broke)
+	testing.expect_value(t, hp_before, i32(10))
+	testing.expect_value(t, bricks[0].hp, i32(9))
+	testing.expect_value(t, index, 0)
+	testing.expect(t, ball.x >= RECT_W + BALL_R + 1)
+
+	for y: i32 = 0; y <= RECT_H; y += 1 {
+		ball.y = y
+		hit, _, _, _ = collideRects(&bricks, &ball)
+		testing.expect(t, !hit)
+	}
+	testing.expect_value(t, bricks[0].hp, i32(9))
+
+	// One pixel of overlap is still a single hit, then the ball is clear.
+	ball.x = RECT_W + BALL_R - 1
+	ball.y = RECT_H / 2
+	ball.vx = -0.2
+	hit, broke, _, _ = collideRects(&bricks, &ball)
+	testing.expect(t, hit)
+	testing.expect(t, !broke)
+	testing.expect_value(t, bricks[0].hp, i32(8))
+	hit, _, _, _ = collideRects(&bricks, &ball)
+	testing.expect(t, !hit)
+	testing.expect_value(t, bricks[0].hp, i32(8))
+}
+
+@(test)
 test_fast_stick_and_life :: proc(t: ^testing.T) {
 	mods: Power_Mods
 	apply_powerup(.LIFE, &mods)
@@ -126,18 +168,41 @@ test_fast_stick_and_life :: proc(t: ^testing.T) {
 
 	lose_ball(&balls[0], &balls, &mods)
 	testing.expect(t, !balls[0].alive)
-	testing.expect(t, !mods.fast)
-	testing.expect_value(t, mods.speed_bonus, i32(0))
-	testing.expect_value(t, balls[1].speed_x, i32(-1))
-	testing.expect_value(t, balls[1].speed_y, i32(1))
+	testing.expect(t, mods.fast)
+	testing.expect_value(t, mods.speed_bonus, i32(1))
+	testing.expect_value(t, balls[1].speed_x, i32(-2))
+	testing.expect_value(t, balls[1].speed_y, i32(2))
 
 	mods.fast = true
 	mods.speed_bonus = 0
-	for _ in 0..<30 {
+	for _ in 0..<int(MAX_BALL_SPEED) {
 		on_speed_bounce(&balls, &mods)
 	}
 	testing.expect_value(t, balls[1].speed_y, MAX_BALL_SPEED)
 	testing.expect(t, mods.speed_bonus < MAX_BALL_SPEED)
+
+	// A paddle hit can outrun the shared floor. Another ball's bounce must leave that speed alone.
+	kept := make([dynamic]Ball)
+	defer delete(kept)
+	mods.fast = true
+	mods.speed_bonus = 5
+	append(&kept, Ball{vx = 40, vy = -10, alive = true})
+	append(&kept, Ball{vx = 1, alive = true})
+	on_speed_bounce(&kept, &mods)
+	testing.expect_value(t, mods.speed_bonus, i32(6))
+	testing.expect_value(t, kept[0].vx, f32(40))
+	testing.expect_value(t, kept[0].vy, f32(-10))
+	testing.expect_value(t, kept[1].speed_x, i32(7))
+	testing.expect_value(t, kept[1].speed_y, i32(0))
+
+	lose_ball(&kept[1], &kept, &mods)
+	testing.expect(t, mods.fast)
+	testing.expect_value(t, mods.speed_bonus, i32(6))
+	testing.expect_value(t, kept[0].vx, f32(40))
+	testing.expect_value(t, kept[0].vy, f32(-10))
+	lose_ball(&kept[0], &kept, &mods)
+	testing.expect(t, !mods.fast)
+	testing.expect_value(t, mods.speed_bonus, i32(0))
 
 	brick := Brick{x = 10, y = 20, drop_count = 1}
 	brick.drops[0] = {kind = .WIDE, target = .PAD, chance = 100}
@@ -160,6 +225,47 @@ bomb_brick :: proc(x, y, hp: i32, drop: Brick_Drop) -> Brick {
 	if hp < 1 do brick.max_hp = 1
 	brick.drops[0] = drop
 	return brick
+}
+
+@(test)
+test_anim_frames_and_trail :: proc(t: ^testing.T) {
+	testing.expect_value(t, trail_alpha(TRAIL_MIN_SPEED), u8(0))
+	testing.expect_value(t, trail_alpha(TRAIL_MIN_SPEED - 1), u8(0))
+	testing.expect_value(t, trail_alpha(f32(MAX_BALL_SPEED)), u8(255))
+	testing.expect(t, trail_alpha(f32(MAX_BALL_SPEED) + 4) == 255)
+	low := trail_alpha(TRAIL_MIN_SPEED + 1)
+	mid := trail_alpha((TRAIL_MIN_SPEED + f32(MAX_BALL_SPEED)) * 0.5)
+	testing.expect(t, low > 0 && low < mid && mid < 255)
+	// A ball at this speed already crosses the board in a flash. The trail has to read there.
+	testing.expect(t, trail_alpha(24) > 80)
+	near := proc(a, b: f32) -> bool {
+		d := a - b
+		if d < 0 do d = -d
+		return d < 0.1
+	}
+	testing.expect(t, near(trail_angle(1, 0), 0))
+	testing.expect(t, near(trail_angle(-1, 0), 180))
+	testing.expect(t, near(trail_angle(0, 1), 90))
+	testing.expect(t, near(trail_angle(0, -1), -90))
+
+	// Two grid rows in a 4×6 sheet. Playback starts at the lower band.
+	width := 4
+	height := 6
+	colors := make([]rl.Color, width * height)
+	defer delete(colors)
+	for i in 0..<len(colors) do colors[i] = rl.Color{0, 0, 0, 255}
+	for x in 0..<width {
+		colors[x] = ANIM_GRID
+		colors[3 * width + x] = ANIM_GRID
+	}
+	frames := anim_frame_rects(colors, width, height)
+	defer delete(frames)
+	testing.expect_value(t, len(frames), 2)
+	testing.expect_value(t, frames[0].y, f32(3))
+	testing.expect_value(t, frames[0].height, f32(3))
+	testing.expect_value(t, frames[0].width, f32(width))
+	testing.expect_value(t, frames[1].y, f32(0))
+	testing.expect_value(t, frames[1].height, f32(3))
 }
 
 expect_rect :: proc(t: ^testing.T, types: []Rect_Type, symbol: rune, hp: i32, color: rl.Color, drops: []Brick_Drop) {

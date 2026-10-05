@@ -1,0 +1,5 @@
+animate bottom to top.
+stretch horrizontally.
+
+right side of animation is allways attached to balls moving faster than 8.
+texture starts off more transparent, but becomes more visible as the ball speed increases until it it fully visivle at max speed of `fast`.

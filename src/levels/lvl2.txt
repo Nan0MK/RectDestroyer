@@ -1,5 +1,5 @@
 BBTTBBTTBB
-L        B
+L   BF   B
 BBOOBBOOBB
-B        L
+B   FB   L
 BBTTBBTTBB

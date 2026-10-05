@@ -1,0 +1,4 @@
+All animations have a pink grid.
+Remove the grid when rendering the animation.
+
+Each animation has a `.animation` file containing any other details for that specific animation.

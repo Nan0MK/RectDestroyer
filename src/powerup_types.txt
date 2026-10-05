@@ -18,5 +18,5 @@ life PAD
 # adds 1 extra life.
 
 fast BALL
-# makes ball increase speed each bounce. Resets to 0 if ball is lost.
-# effects all live balls.
+# makes ball increase speed each bounce. Effects all live balls.
+# A ball still in play keeps its speed when another is lost. Ends when no ball is left.
