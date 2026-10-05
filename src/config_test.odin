@@ -360,6 +360,30 @@ test_score_trip :: proc(t: ^testing.T) {
 	expect_label(t, &wide, "SCORE 50000000000000000001")
 }
 
+@(test)
+test_run_overall :: proc(t: ^testing.T) {
+	reset_run_score()
+	defer reset_run_score()
+
+	first: big.Int
+	second: big.Int
+	defer big.destroy(&first, &second)
+	big.set(&first, 10)
+	big.set(&second, -3)
+	bank_level_score(&first)
+	level_banked = false
+	bank_level_score(&second)
+	bank_level_score(&second)
+	testing.expect_value(t, run_count, 2)
+	testing.expect(t, compute_run_overall(&run_overall))
+	// (10 + -3) * 2
+	expect_score_i64(t, &run_overall, 14)
+
+	reset_run_score()
+	testing.expect(t, compute_run_overall(&run_overall))
+	expect_score_i64(t, &run_overall, 0)
+}
+
 expect_half :: proc(t: ^testing.T, start, want: i64) {
 	score: big.Int
 	defer big.destroy(&score)

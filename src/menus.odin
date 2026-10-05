@@ -12,6 +12,7 @@ Screen :: enum {
 	LEVEL_END,
 	LAST_LIFE,
 	LOST,
+	SCORES,
 }
 
 // "LEVEL SELECT" is 12 cells in the sprite font at 24px, which needs this width.
@@ -76,6 +77,16 @@ level_button_rect :: proc(index: int) -> (x, y, w, h: i32) {
 	return
 }
 
+// CLEAR above BACK, both sitting on the bottom of the past-scores list.
+scores_button_rect :: proc(index: int) -> (x, y, w, h: i32) {
+	w = px(MENU_BTN_W)
+	h = px(MENU_BTN_H)
+	x = (SCW - w) / 2
+	back_y := SCH - px(88)
+	y = back_y - i32(1 - index) * (h + px(MENU_BTN_GAP))
+	return
+}
+
 back_button_rect :: proc() -> (x, y, w, h: i32) {
 	w = px(MENU_BTN_W)
 	h = px(MENU_BTN_H)
@@ -118,13 +129,16 @@ update_menus :: proc(screen: Screen, mouse: rl.Vector2, playing_level: int) -> (
 	case .MENU:
 		play_x, play_y, play_w, play_h := main_button_rect(0)
 		levels_x, levels_y, levels_w, levels_h := main_button_rect(1)
-		quit_x, quit_y, quit_w, quit_h := main_button_rect(2)
+		scores_x, scores_y, scores_w, scores_h := main_button_rect(2)
+		quit_x, quit_y, quit_w, quit_h := main_button_rect(3)
 		if button_clicked(play_x, play_y, play_w, play_h, mouse) && len(LEVELS) > 0 {
 			next = .PLAY
 			start = true
 			level_index = 0
 		} else if button_clicked(levels_x, levels_y, levels_w, levels_h, mouse) {
 			next = .LEVEL_SELECT
+		} else if button_clicked(scores_x, scores_y, scores_w, scores_h, mouse) {
+			next = .SCORES
 		} else if button_clicked(quit_x, quit_y, quit_w, quit_h, mouse) {
 			quit = true
 		}
@@ -180,31 +194,49 @@ update_menus :: proc(screen: Screen, mouse: rl.Vector2, playing_level: int) -> (
 		} else if button_clicked(quit_x, quit_y, quit_w, quit_h, mouse) {
 			quit = true
 		}
+	case .SCORES:
+		clear_x, clear_y, clear_w, clear_h := scores_button_rect(0)
+		back_x, back_y, back_w, back_h := scores_button_rect(1)
+		if button_clicked(clear_x, clear_y, clear_w, clear_h, mouse) {
+			clear_saved_scores()
+			scores_scroll = 0
+		} else if button_clicked(back_x, back_y, back_w, back_h, mouse) {
+			next = .MENU
+		}
 	}
 	return
 }
 
 // Digits for the level-clear and you-lost crawl. Held only while one of those menus is up.
+// credits_overall is set when the run has ended: last level cleared, or last life lost.
 credits_digits: []u8
+credits_overall: []u8
 credits_scroll: f64
 credits_for: Screen
+scores_scroll: f64
+scores_for: Screen
 
-free_end_credits :: proc() {
-	delete(credits_digits)
-	credits_digits = nil
+free_digit_buf :: proc(buf: ^[]u8) {
+	delete(buf^)
+	buf^ = nil
 }
 
-store_credits_digits :: proc(score: ^big.Int) {
-	free_end_credits()
+free_end_credits :: proc() {
+	free_digit_buf(&credits_digits)
+	free_digit_buf(&credits_overall)
+}
+
+store_digits :: proc(dst: ^[]u8, score: ^big.Int) {
+	free_digit_buf(dst)
 	text, err := big.itoa(score)
 	defer delete(text)
 	if err != big.Error.None || len(text) == 0 {
-		credits_digits = make([]u8, 1)
-		credits_digits[0] = '0'
+		dst^ = make([]u8, 1)
+		dst^[0] = '0'
 		return
 	}
-	credits_digits = make([]u8, len(text))
-	copy(credits_digits, text)
+	dst^ = make([]u8, len(text))
+	copy(dst^, text)
 }
 
 credits_chars_per_line :: proc(size, max_w: i32) -> int {
@@ -322,8 +354,17 @@ draw_end_credits :: proc(mods: Power_Mods, balls: []Ball) {
 	for ball in balls {
 		if ball.alive do alive += 1
 	}
-	// 0 SCORE, then the digit lines, a blank, STATS, seven counts, then one speed line per living ball.
-	total := digit_lines + 10 + alive
+	// Header, digit lines, then on a finished run a blank, OVERALL, and those digits.
+	// A blank, STATS, seven counts, and one speed line per living ball follow.
+	extra := 0
+	overall_lines := 0
+	if len(credits_overall) > 0 {
+		overall_lines = (len(credits_overall) + cpl - 1) / cpl
+		if overall_lines < 1 do overall_lines = 1
+		extra = 2 + overall_lines
+	}
+	lead := 1 + digit_lines + extra
+	total := digit_lines + extra + 10 + alive
 
 	dt := f64(rl.GetFrameTime())
 	if dt < 0 do dt = 0
@@ -355,28 +396,33 @@ draw_end_credits :: proc(mods: Power_Mods, balls: []Ball) {
 	for i in first ..< last {
 		y := i32(base + f64(i) * f64(line_h))
 		if i == 0 {
-			draw_centered_line("SCORE", y, size)
+			if credits_for == .LEVEL_END {
+				draw_centered_line("LEVEL SCORE", y, size)
+			} else {
+				draw_centered_line("SCORE", y, size)
+			}
 			continue
 		}
 		if i >= 1 && i < 1 + digit_lines {
-			start := (i - 1) * cpl
-			end := start + cpl
-			if start > len(credits_digits) do start = len(credits_digits)
-			if end > len(credits_digits) do end = len(credits_digits)
-			n := end - start
-			for k in 0 ..< n {
-				line_buf[k] = credits_digits[start + k]
-			}
-			line_buf[n] = 0
-			draw_text(cstring(raw_data(line_buf)), digit_x, y, size, rl.WHITE)
+			draw_digit_line(credits_digits, i - 1, cpl, digit_x, y, size, line_buf)
 			continue
 		}
-		if i == digit_lines + 1 do continue
-		if i == digit_lines + 2 {
+		if extra > 0 && i < lead {
+			rel := i - (1 + digit_lines)
+			if rel == 0 do continue
+			if rel == 1 {
+				draw_centered_line("OVERALL", y, size)
+				continue
+			}
+			draw_digit_line(credits_overall, rel - 2, cpl, digit_x, y, size, line_buf)
+			continue
+		}
+		if i == lead do continue
+		if i == lead + 1 {
 			draw_centered_line("STATS", y, size)
 			continue
 		}
-		slot := i - (digit_lines + 3)
+		slot := i - (lead + 2)
 		label: [64]byte
 		text: cstring
 		if slot == 0 {
@@ -419,22 +465,150 @@ draw_end_credits :: proc(mods: Power_Mods, balls: []Ball) {
 	rl.EndScissorMode()
 }
 
+draw_digit_line :: proc(digits: []u8, line_i, cpl: int, x, y, size: i32, line_buf: []u8) {
+	start := line_i * cpl
+	end := start + cpl
+	if start > len(digits) do start = len(digits)
+	if end > len(digits) do end = len(digits)
+	n := end - start
+	for k in 0 ..< n {
+		line_buf[k] = digits[start + k]
+	}
+	if n < len(line_buf) do line_buf[n] = 0
+	draw_text(cstring(raw_data(line_buf)), x, y, size, rl.WHITE)
+}
+
+draw_digit_text :: proc(digits: string, line_i, cpl: int, x, y, size: i32, line_buf: []u8) {
+	start := line_i * cpl
+	end := start + cpl
+	if start > len(digits) do start = len(digits)
+	if end > len(digits) do end = len(digits)
+	n := 0
+	for i in start ..< end {
+		line_buf[n] = digits[i]
+		n += 1
+	}
+	if n < len(line_buf) do line_buf[n] = 0
+	draw_text(cstring(raw_data(line_buf)), x, y, size, rl.WHITE)
+}
+
 prepare_end_credits :: proc(screen: Screen, score: ^big.Int) {
 	if screen != .LEVEL_END && screen != .LOST {
-		if len(credits_digits) > 0 {
+		if len(credits_digits) > 0 || len(credits_overall) > 0 {
 			free_end_credits()
 			credits_scroll = 0
 		}
 		credits_for = screen
 		return
 	}
-	if credits_for == screen do return
-	store_credits_digits(score)
+	if credits_for == screen {
+		// A failed save retries on a later frame. Pick up OVERALL once that write lands.
+		if run_show_overall && len(credits_overall) == 0 {
+			store_digits(&credits_overall, &run_overall)
+		}
+		return
+	}
+	store_digits(&credits_digits, score)
+	if run_show_overall {
+		store_digits(&credits_overall, &run_overall)
+	} else {
+		free_digit_buf(&credits_overall)
+	}
 	credits_scroll = 0
 	credits_for = screen
 }
 
-// Main menu and level select fill the screen. Pause, level clear, and you lost draw over the playfield.
+// One saved overall score: a "SCORE n" header, its wrapped digits, then a gap.
+saved_line_count :: proc(cpl: int) -> int {
+	total := 0
+	for line in score_lines {
+		lines := 1
+		if len(line) > 0 do lines = (len(line) + cpl - 1) / cpl
+		total += 2 + lines
+	}
+	return total
+}
+
+// kind 0 is the header, 1 is a digit line, 2 is the gap under that score.
+locate_saved_line :: proc(index, cpl: int) -> (which, kind, offset: int) {
+	at := 0
+	for s in 0 ..< len(score_lines) {
+		n := len(score_lines[s])
+		lines := 1
+		if n > 0 do lines = (n + cpl - 1) / cpl
+		if index < at + 1 do return s, 0, 0
+		if index < at + 1 + lines do return s, 1, index - (at + 1)
+		if index < at + 2 + lines do return s, 2, 0
+		at += 2 + lines
+	}
+	return 0, 2, 0
+}
+
+// Past scores rise like the end-of-round crawl so a long number can be read.
+draw_saved_scores :: proc() {
+	if len(score_lines) == 0 {
+		draw_centered_text("NO SCORES", px(220), px(32), rl.WHITE)
+		return
+	}
+
+	size := px(26)
+	line_h := size + px(8)
+	if line_h < 1 do line_h = 1
+	_, clear_y, _, _ := scores_button_rect(0)
+	view_top := px(110)
+	view_h := clear_y - px(16) - view_top
+	if view_h < line_h do view_h = line_h
+
+	cpl := credits_chars_per_line(size, SCW - px(32))
+	if cpl < 1 do cpl = 1
+	total := saved_line_count(cpl)
+	if total < 1 do return
+
+	dt := f64(rl.GetFrameTime())
+	if dt < 0 do dt = 0
+	if dt > 0.05 do dt = 0.05
+	scores_scroll += f64(px(36)) * dt
+	span := f64(total * int(line_h) + int(view_h))
+	if span < 1 do span = 1
+	for scores_scroll >= span {
+		scores_scroll -= span
+	}
+
+	base := f64(view_top + view_h) - scores_scroll
+	first := int((f64(view_top) - base) / f64(line_h))
+	if first < 0 do first = 0
+	if first > total do first = total
+	last := first + int(view_h / line_h) + 3
+	if last > total do last = total
+	if first > last do first = last
+
+	digit_w := measure_text("0", size)
+	if digit_w < 1 do digit_w = size
+	block_w := i32(cpl) * digit_w
+	digit_x := (SCW - block_w) / 2
+	if digit_x < px(16) do digit_x = px(16)
+	line_buf := make([]u8, cpl + 1)
+	defer delete(line_buf)
+
+	rl.BeginScissorMode(0, c.int(view_top), c.int(SCW), c.int(view_h))
+	for i in first ..< last {
+		y := i32(base + f64(i) * f64(line_h))
+		which, kind, offset := locate_saved_line(i, cpl)
+		if kind == 2 do continue
+		if kind == 0 {
+			label: [64]byte
+			n := append_text(&label, 0, "SCORE ")
+			n = append_i64(&label, n, i64(which + 1))
+			label[n] = 0
+			draw_centered_line(cstring(&label[0]), y, size)
+			continue
+		}
+		draw_digit_text(score_lines[which], offset, cpl, digit_x, y, size, line_buf)
+	}
+	rl.EndScissorMode()
+}
+
+// Main menu, level select, and past scores fill the screen. Pause, level clear, and you lost draw over the playfield.
 draw_menus :: proc(screen: Screen, mouse: rl.Vector2, score: ^big.Int, playing_level: int, mods: Power_Mods, balls: []Ball) {
 	prepare_end_credits(screen, score)
 	switch screen {
@@ -442,9 +616,11 @@ draw_menus :: proc(screen: Screen, mouse: rl.Vector2, score: ^big.Int, playing_l
 		draw_centered_text("RECT-DESTROYER!", px(150), px(40), rl.WHITE)
 		play_x, play_y, play_w, play_h := main_button_rect(0)
 		levels_x, levels_y, levels_w, levels_h := main_button_rect(1)
-		quit_x, quit_y, quit_w, quit_h := main_button_rect(2)
+		scores_x, scores_y, scores_w, scores_h := main_button_rect(2)
+		quit_x, quit_y, quit_w, quit_h := main_button_rect(3)
 		draw_button("PLAY", play_x, play_y, play_w, play_h, mouse)
 		draw_button("LEVEL SELECT", levels_x, levels_y, levels_w, levels_h, mouse)
+		draw_button("PAST SCORES", scores_x, scores_y, scores_w, scores_h, mouse)
 		draw_button("QUIT", quit_x, quit_y, quit_w, quit_h, mouse)
 	case .LEVEL_SELECT:
 		draw_centered_text("SELECT LEVEL", px(48), px(36), rl.WHITE)
@@ -486,5 +662,15 @@ draw_menus :: proc(screen: Screen, mouse: rl.Vector2, score: ^big.Int, playing_l
 		quit_x, quit_y, quit_w, quit_h := main_button_rect(1)
 		draw_button("MAIN MENU", menu_x, menu_y, menu_w, menu_h, mouse)
 		draw_button("QUIT", quit_x, quit_y, quit_w, quit_h, mouse)
+	case .SCORES:
+		if scores_for != .SCORES do scores_scroll = 0
+		scores_for = .SCORES
+		draw_centered_text("PAST SCORES", px(48), px(36), rl.WHITE)
+		draw_saved_scores()
+		clear_x, clear_y, clear_w, clear_h := scores_button_rect(0)
+		back_x, back_y, back_w, back_h := scores_button_rect(1)
+		draw_button("CLEAR SCORES", clear_x, clear_y, clear_w, clear_h, mouse)
+		draw_button("BACK", back_x, back_y, back_w, back_h, mouse)
 	}
+	if screen != .SCORES do scores_for = screen
 }

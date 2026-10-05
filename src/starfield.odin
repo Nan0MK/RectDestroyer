@@ -5,7 +5,7 @@ import "core:math/rand"
 import rl "vendor:raylib"
 import "vendor:raylib/rlgl"
 
-// Main menu and level select. The playfield is cleared black, then these sheets fly at the camera.
+// Main menu, level select, and the past-scores list. The playfield is cleared black, then these sheets fly at the camera.
 // PNG alpha is left alone. The tint only fades a sheet in from black while it is still far away.
 STAR_A_COUNT :: 10
 STAR_B_SLOTS :: 3

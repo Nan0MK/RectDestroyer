@@ -932,6 +932,8 @@ start_level :: proc(index: int, bricks: ^[dynamic]Brick, balls: ^[dynamic]Ball, 
 	round_lives_lost = 0
 	round_elapsed_ns = 0
 	round_score_settled = false
+	level_banked = false
+	if reset_lives do reset_run_score()
 	lives := mods.lives
 	mods^ = {}
 	mods.pad_w = PADW
@@ -976,6 +978,8 @@ game :: proc() {
 	score: big.Int
 	big.set(&score, 0)
 	defer big.destroy(&score)
+	init_saved_scores()
+	defer shutdown_saved_scores()
 	level_started: time.Time
 	skipped_ns: i64 = 0
 	pause_started: time.Time
@@ -1076,11 +1080,19 @@ game :: proc() {
 		} else if screen == .PLAY || screen == .LEVEL_END || screen == .LOST {
 			update_animations(rl.GetFrameTime(), screen == .PLAY)
 		}
+		// The level score stays on screen while LEVEL_END is up, so a failed bank can retry.
+		// A loss does not count the level that was still in play.
+		if screen == .LEVEL_END && !level_banked {
+			bank_level_score(&score)
+		}
+		if screen == .LOST || (screen == .LEVEL_END && level_index + 1 >= len(LEVELS)) {
+			finish_run()
+		}
 
 		// ___
 		rl.BeginTextureMode(game_target)
 		rl.ClearBackground(rl.BLACK)
-		if screen == .MENU || screen == .LEVEL_SELECT {
+		if screen == .MENU || screen == .LEVEL_SELECT || screen == .SCORES {
 			draw_starfield()
 		} else {
 			draw_space_background()

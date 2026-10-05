@@ -15,6 +15,9 @@
 Thumbs.db
 desktop.ini
 
+# Saved runs. One overall score per line.
+scores.txt
+
 # Local session resume
 resume.cmd
 resume.ps1
