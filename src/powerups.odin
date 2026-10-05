@@ -1,6 +1,7 @@
 package src
 
 import "core:fmt"
+import big "core:math/big"
 import "core:math/rand"
 import "core:os"
 import "core:strconv"
@@ -14,9 +15,11 @@ MULTIPLY_SECONDS :: 10.0
 MAX_BALLS :: 32
 // The life in play counts. Reaching 0 is a loss.
 START_LIVES: i32 = 1
-LIFE_POINT_SIZE: i32 = 48
-LIFE_POINT_GAP: i32 = 8
-LIFE_POINT_MARGIN: i32 = 16
+// life_point.png is 16×16, drawn at 5×. life_lost fills this same box.
+LIFE_POINT_SIZE: i32 = 80
+LIFE_POINT_GAP: i32 = 16
+// The copy drawn over the bricks. The one behind the board stays opaque.
+LIFE_POINT_OVER_ALPHA :: u8(128)
 
 // Slow compared with the ball, which moves one pixel per frame until fast raises it.
 // The drop art is 16×16. It is drawn at 2×, the same scale as a brick, and this box is both the picture and the catch.
@@ -252,6 +255,7 @@ grant_brick_drops :: proc(brick: Brick, falling: ^[dynamic]Falling_Powerup, mods
 			})
 		case .BALL:
 			apply_powerup(drop.kind, mods)
+			note_powerup_collected()
 		case .RECT:
 		}
 	}
@@ -278,20 +282,21 @@ consider_bomb :: proc(bricks: ^[dynamic]Brick, index: int, exploded: []bool, que
 	play_explosion(bricks[index].x, bricks[index].y)
 }
 
-damage_from_blast :: proc(bricks: ^[dynamic]Brick, index: int, exploded: []bool, queue: ^[dynamic]int, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods, score: ^i64, elapsed_ns: i64) {
+damage_from_blast :: proc(bricks: ^[dynamic]Brick, index: int, exploded: []bool, queue: ^[dynamic]int, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods, score: ^big.Int, elapsed_ns: i64) {
 	brick := &bricks[index]
 	if brick.hp <= 0 do return
+	start_brick_shake()
 	brick.hp -= 1
 	consider_bomb(bricks, index, exploded, queue)
 	if brick.hp <= 0 {
 		grant_brick_drops(brick^, falling, mods)
-		score^ += brick_points(elapsed_ns)
+		score_add_i64(score, brick_points(elapsed_ns))
 	}
 }
 
 // The hit brick explodes when its bomb roll succeeds. Orthogonal neighbors take 1 HP.
 // A neighbor that is itself a bomb can explode from that hit. Diagonal bricks are left alone.
-explode_from_hit :: proc(bricks: ^[dynamic]Brick, origin: int, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods, score: ^i64, elapsed_ns: i64) {
+explode_from_hit :: proc(bricks: ^[dynamic]Brick, origin: int, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods, score: ^big.Int, elapsed_ns: i64) {
 	if origin < 0 || origin >= len(bricks) do return
 	_, is_bomb := bomb_chance(bricks[origin])
 	if !is_bomb do return
@@ -368,9 +373,12 @@ on_speed_bounce :: proc(balls: ^[dynamic]Ball, mods: ^Power_Mods) {
 
 // A ball that leaves the playfield leaves every other ball at its current speed.
 // Fast and the speed bonus clear when the last ball is gone.
+// A ball that was already gone does not count again. Right-click never comes through here.
 lose_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, mods: ^Power_Mods) {
+	if !ball.alive do return
 	ball.alive = false
 	ball.stuck = false
+	note_ball_lost()
 	if any_ball_alive(balls^) do return
 	mods.fast = false
 	mods.speed_bonus = 0
@@ -391,6 +399,7 @@ update_falling_powerups :: proc(drops: ^[dynamic]Falling_Powerup, pad_left, pad_
 		}
 		if rects_overlap(left, top, DROP_W, DROP_H, pad_left, pad_top, mods.pad_w, pad_h) {
 			apply_powerup(drops[i].kind, mods)
+			note_powerup_collected()
 			ordered_remove(drops, i)
 		}
 	}
@@ -532,44 +541,52 @@ unload_life_point_texture :: proc() {
 	life_point_loaded = false
 }
 
-// One icon per life, along the lower left. Icons wrap upward once a row fills the width.
+// One icon per life, in the top-left slot the LIVES label used.
+// Extra icons continue to the right, then wrap downward. The score keeps the top right.
 life_point_origin :: proc(index: int) -> (x, y: i32) {
 	step := LIFE_POINT_SIZE + LIFE_POINT_GAP
-	cols := (SCW - LIFE_POINT_MARGIN * 2) / step
+	left := px(16)
+	top := px(40)
+	right := SCW - px(360)
+	if right < left + step do right = left + step
+	cols := (right - left) / step
 	if cols < 1 do cols = 1
 	slot := index
 	if slot < 0 do slot = 0
 	col := i32(slot % int(cols))
 	row := i32(slot / int(cols))
-	x = LIFE_POINT_MARGIN + col * step
-	y = SCH - LIFE_POINT_MARGIN - LIFE_POINT_SIZE - row * step
+	x = left + col * step
+	y = top + row * step
 	return
 }
 
-// Drawn before the board so the playfield covers them.
-render_life_points :: proc(lives: i32) {
-	if lives < 1 do return
+// The opaque pass is drawn before the board. The half-alpha pass is drawn after the bricks.
+render_life_points :: proc(lives: i32, alpha: u8) {
+	if lives < 1 || alpha == 0 do return
 	ensure_life_point_texture()
+	tint := rl.Color{255, 255, 255, alpha}
 	for i in 0..<int(lives) {
 		x, y := life_point_origin(i)
 		if life_point_tex.id != 0 {
-			draw_texture_rect(life_point_tex, x, y, LIFE_POINT_SIZE, LIFE_POINT_SIZE)
+			src := rl.Rectangle{0, 0, f32(life_point_tex.width), f32(life_point_tex.height)}
+			dst := rl.Rectangle{f32(x), f32(y), f32(LIFE_POINT_SIZE), f32(LIFE_POINT_SIZE)}
+			rl.DrawTexturePro(life_point_tex, src, dst, {}, 0, tint)
 		} else {
-			rl.DrawRectangle(x, y, LIFE_POINT_SIZE, LIFE_POINT_SIZE, rl.Color{56, 138, 255, 255})
+			rl.DrawRectangle(x, y, LIFE_POINT_SIZE, LIFE_POINT_SIZE, rl.Color{56, 138, 255, alpha})
 		}
 	}
 }
 
-// Lives sit under the x2 timer. Stick and fast are drawn only while they are on.
+// Stick and fast sit under the life icons. They are drawn only while they are on.
 render_power_status :: proc(mods: Power_Mods) {
 	y := px(40)
+	if mods.lives > 0 {
+		_, last_y := life_point_origin(int(mods.lives) - 1)
+		y = last_y + LIFE_POINT_SIZE + px(8)
+	}
 	step := px(24)
 	size := px(20)
 	left := px(16)
-	buf: [24]byte
-	lives := format_prefixed("LIVES ", mods.lives, &buf)
-	draw_text(lives, left, y, size, rl.SKYBLUE)
-	y += step
 	if mods.stick {
 		draw_text("STICK", left, y, size, rl.BEIGE)
 		y += step

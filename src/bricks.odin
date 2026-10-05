@@ -432,35 +432,39 @@ generateRects :: proc(level: string) -> [dynamic]Brick {
 	return bricks
 }
 
-renderRects :: proc(bricks: [dynamic]Brick) {
+// shake moves the pictures only. Collision still uses each brick's stored x and y.
+renderRects :: proc(bricks: [dynamic]Brick, shake: bool) {
+	ox, oy := brick_shake_offset(shake)
 	for brick in bricks {
 		if brick.hp <= 0 do continue
+		x := brick.x + ox
+		y := brick.y + oy
 		if brick.texture.id != 0 {
-			draw_brick_texture(brick.texture, brick.x, brick.y)
+			draw_brick_texture(brick.texture, x, y)
 			if crack, ok := crack_for_brick(brick); ok {
-				draw_brick_texture(crack, brick.x, brick.y)
+				draw_brick_texture(crack, x, y)
 			}
 		} else {
 			fill := brick_draw_color(brick)
-			rl.DrawRectangle(brick.x, brick.y, RECT_W, RECT_H, fill)
+			rl.DrawRectangle(x, y, RECT_W, RECT_H, fill)
 			ink := ink_for(fill)
 			// A black brick matches the background, so the outline is what shows the cell.
 			if int(fill.r) + int(fill.g) + int(fill.b) < 80 {
-				rl.DrawRectangleLines(brick.x, brick.y, RECT_W, RECT_H, rl.GRAY)
+				rl.DrawRectangleLines(x, y, RECT_W, RECT_H, rl.GRAY)
 			}
 			size: i32 = 24
 			if brick.max_hp > 1 {
 				buf: [12]byte
 				text := format_hp(brick.hp, &buf)
 				width := measure_text(text, size)
-				draw_text(text, brick.x + (RECT_W - width) / 2, brick.y + (RECT_H - size) / 2, size, ink)
+				draw_text(text, x + (RECT_W - width) / 2, y + (RECT_H - size) / 2, size, ink)
 			} else {
 				mark: [2]byte
 				mark[0] = u8(brick.kind)
 				mark[1] = 0
 				text := cstring(&mark[0])
 				width := measure_text(text, size)
-				draw_text(text, brick.x + (RECT_W - width) / 2, brick.y + (RECT_H - size) / 2, size, ink)
+				draw_text(text, x + (RECT_W - width) / 2, y + (RECT_H - size) / 2, size, ink)
 			}
 		}
 	}

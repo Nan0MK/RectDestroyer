@@ -11,6 +11,8 @@
 
 package src
 import "core:fmt"
+import "core:math"
+import big "core:math/big"
 import "core:math/rand"
 import "core:os"
 import "core:slice"
@@ -39,7 +41,7 @@ PAD_TOP: i32 = WINDOW_H - BOTTOM_MARGIN
 SIDE_MARGIN :: 24
 PLAY_LANE :: 220
 
-// Menus and the status labels use this. Bricks, the paddle, the ball, and the playfield title do not.
+// Menus and the status labels use this. Bricks, the paddle, the ball, and the life icons do not.
 ui_scale: f32 = 1
 
 // Ball. The drawn box is this diameter, and the hit shape is the circle inside it.
@@ -49,9 +51,18 @@ BALL_R :: 12
 // multiplier = SCORE_SCALE / elapsed_ns - elapsed_ns / NS_PER_MINUTE.
 // Elapsed is nanoseconds since this level started, pause time not counted, and at least 1 so the division is defined.
 // There is no clamp. 10 ns is 600 billion. The multiplier is 0 around 10 minutes and -27 at 30 minutes.
+// That running total is the score during play. settle_round_score adds the round terms once, at the end.
+// The total is an arbitrary-precision integer. The end-of-round multiplies are not capped.
 BRICK_SCORE :: i64(1)
 SCORE_SCALE :: i64(6_000_000_000_000)
 NS_PER_MINUTE :: i64(60_000_000_000)
+
+// Tallies for the level in play. start_level clears them. The score reads them once, when the round ends.
+round_powerups: i64
+round_balls_lost: i64
+round_lives_lost: i64
+round_elapsed_ns: i64
+round_score_settled: bool
 
 // vx, vy are pixels per frame. speed_x, speed_y mirror them for whole pixels.
 // carry holds the fraction so a shallow angle still moves, one pixel at a time.
@@ -63,6 +74,8 @@ Ball :: struct {
 	alive:            bool,
 	stuck:            bool,
 	stuck_dx:         i32,
+	// Set by a paddle or brick bounce. The next brick doubles the score. Falling off halves it.
+	from_bounce:      bool,
 }
 
 // Paddle aim. The game runs at 500 FPS, so one frame of mouse motion is mostly noise.
@@ -419,16 +432,85 @@ draw_ball :: proc(ball: Ball) {
 	rl.DrawCircle(ball.x, ball.y, BALL_R, rl.RED)
 }
 
-draw_playfield :: proc(bricks: [dynamic]Brick, balls: [dynamic]Ball, falling: [dynamic]Falling_Powerup, pad_left: i32, mods: Power_Mods) {
-	render_life_points(mods.lives)
-	draw_text("RECT-DESTROYER!", 190, 200, 20, rl.WHITE)
-	rl.DrawRectangle(pad_left, PAD_TOP, mods.pad_w, PADH, rl.WHITE)
+// src/textures/pad_center.png tiles across the paddle. src/textures/pad_end.png caps both ends, on top of the center.
+// A missing center keeps the white rectangle. The hit box stays the rectangle.
+pad_center_tex: rl.Texture2D
+pad_end_tex: rl.Texture2D
+pad_tex_loaded: bool
+
+ensure_pad_textures :: proc() {
+	if pad_tex_loaded || !rl.IsWindowReady() do return
+	pad_tex_loaded = true
+	pad_center_tex = load_texture_file("src/textures/pad_center.png")
+	pad_end_tex = load_texture_file("src/textures/pad_end.png")
+}
+
+unload_pad_textures :: proc() {
+	if pad_center_tex.id != 0 do rl.UnloadTexture(pad_center_tex)
+	if pad_end_tex.id != 0 do rl.UnloadTexture(pad_end_tex)
+	pad_center_tex = {}
+	pad_end_tex = {}
+	pad_tex_loaded = false
+}
+
+// One horizontal repeat. The last slice is clipped to the paddle's right edge.
+draw_pad_center :: proc(left, width: i32) {
+	tex := pad_center_tex
+	tile_w := tex.width
+	tile_h := tex.height
+	if tile_w < 1 || tile_h < 1 do return
+	x := left
+	remain := width
+	for remain > 0 {
+		slice := tile_w
+		if slice > remain do slice = remain
+		src := rl.Rectangle{0, 0, f32(slice), f32(tile_h)}
+		dst := rl.Rectangle{f32(x), f32(PAD_TOP), f32(slice), f32(PADH)}
+		rl.DrawTexturePro(tex, src, dst, {}, 0, rl.WHITE)
+		x += slice
+		remain -= slice
+	}
+}
+
+// flip mirrors the cap so the right end faces outward.
+draw_pad_end :: proc(x: i32, flip: bool) {
+	tex := pad_end_tex
+	w := tex.width
+	h := tex.height
+	if w < 1 || h < 1 do return
+	src := rl.Rectangle{0, 0, f32(w), f32(h)}
+	if flip {
+		src.x = f32(w)
+		src.width = -f32(w)
+	}
+	dst := rl.Rectangle{f32(x), f32(PAD_TOP), f32(w), f32(h)}
+	rl.DrawTexturePro(tex, src, dst, {}, 0, rl.WHITE)
+}
+
+draw_paddle :: proc(left, width: i32) {
+	ensure_pad_textures()
+	if pad_center_tex.id == 0 {
+		rl.DrawRectangle(left, PAD_TOP, width, PADH, rl.WHITE)
+	} else {
+		draw_pad_center(left, width)
+	}
+	if pad_end_tex.id == 0 || width < 1 do return
+	draw_pad_end(left, false)
+	right := left + width - pad_end_tex.width
+	if right < left do right = left
+	draw_pad_end(right, true)
+}
+
+draw_playfield :: proc(bricks: [dynamic]Brick, balls: [dynamic]Ball, falling: [dynamic]Falling_Powerup, pad_left: i32, mods: Power_Mods, shake_bricks: bool) {
+	render_life_points(mods.lives, 255)
+	draw_paddle(pad_left, mods.pad_w)
 	// rl.DrawRectangle(PAD_LEFT, PAD_TOP, 12, 12, rl.GREEN)
 	// rl.DrawRectangle(PAD_RIGHT, PAD_TOP, 12, 12, rl.GREEN)
 	// rl.DrawRectangle(PAD_LEFT, PAD_BOT, 12, 12, rl.GREEN)
 	// rl.DrawRectangle(PAD_RIGHT, PAD_BOT, 12, 12, rl.GREEN)
 
-	renderRects(bricks)
+	renderRects(bricks, shake_bricks)
+	render_life_points(mods.lives, LIFE_POINT_OVER_ALPHA)
 	for ball in balls {
 		if !ball.alive do continue
 		render_ball_trail(ball)
@@ -466,11 +548,91 @@ game_mouse :: proc() -> rl.Vector2 {
 	return {(window.x - x) * f32(SCW) / w, (window.y - y) * f32(SCH) / h}
 }
 
+// A spent life jitters the picture. The last life slams it until that animation ends.
+// The offset is in window pixels, so the jolt stays the same size when the board is letterboxed.
+SHAKE_TIME :: f32(0.34)
+SHAKE_PIXELS :: f32(8)
+SHAKE_FINALE_PIXELS :: f32(48)
+shake_left: f32
+shake_span: f32 = SHAKE_TIME
+shake_pixels: f32 = SHAKE_PIXELS
+
+start_screen_shake :: proc() {
+	shake_left = SHAKE_TIME
+	shake_span = SHAKE_TIME
+	shake_pixels = SHAKE_PIXELS
+}
+
+// Runs for the whole life_lost sheet, which is what the last-life screen waits on.
+start_finale_shake :: proc() {
+	ensure_animations()
+	span := f32(len(clips[.LIFE_LOST].frames)) * ANIM_FRAME_DT
+	if span < SHAKE_TIME do span = SHAKE_TIME
+	shake_left = span
+	shake_span = span
+	shake_pixels = SHAKE_FINALE_PIXELS
+}
+
+update_screen_shake :: proc(dt: f32) {
+	step := dt
+	if step < 0 do step = 0
+	if shake_left <= 0 do return
+	shake_left -= step
+	if shake_left < 0 do shake_left = 0
+}
+
+shake_pixel :: proc(v: f32) -> f32 {
+	if v >= 0 do return f32(i32(v + 0.5))
+	return f32(i32(v - 0.5))
+}
+
+// The brick grid only. Hit boxes stay put. A few playfield pixels, shorter than a lost life.
+BRICK_SHAKE_TIME :: f32(0.15)
+BRICK_SHAKE_PIXELS :: f32(4)
+brick_shake_left: f32
+
+start_brick_shake :: proc() {
+	brick_shake_left = BRICK_SHAKE_TIME
+}
+
+update_brick_shake :: proc(dt: f32) {
+	step := dt
+	if step < 0 do step = 0
+	if brick_shake_left <= 0 do return
+	brick_shake_left -= step
+	if brick_shake_left < 0 do brick_shake_left = 0
+}
+
+// Added to every brick's draw position. Zero while the board is not in play, so pause holds the timer without showing the shift.
+brick_shake_offset :: proc(show: bool) -> (x, y: i32) {
+	if !show || brick_shake_left <= 0 do return 0, 0
+	amp := BRICK_SHAKE_PIXELS * (brick_shake_left / BRICK_SHAKE_TIME)
+	age := BRICK_SHAKE_TIME - brick_shake_left
+	x = i32(shake_pixel(math.sin(age * 72) * amp))
+	y = i32(shake_pixel(math.cos(age * 55) * amp))
+	return
+}
+
+// Whole window pixels. The strength falls off until the timer ends.
+screen_shake_offset :: proc() -> (x, y: f32) {
+	if shake_left <= 0 || shake_span <= 0 do return 0, 0
+	amp := shake_pixels * (shake_left / shake_span)
+	age := shake_span - shake_left
+	x = shake_pixel(math.sin(age * 54) * amp)
+	y = shake_pixel(math.cos(age * 41) * amp)
+	return
+}
+
 // The frame is stored upside down. A negative source height flips it into the letterboxed rectangle.
-present_game :: proc(target: rl.RenderTexture2D) {
+// shake moves that rectangle. Pause leaves it still and keeps the remaining time.
+present_game :: proc(target: rl.RenderTexture2D, shake: bool) {
 	x, y, w, h := frame_fit()
+	ox, oy: f32
+	if shake {
+		ox, oy = screen_shake_offset()
+	}
 	src := rl.Rectangle{0, 0, f32(target.texture.width), -f32(target.texture.height)}
-	dst := rl.Rectangle{x, y, w, h}
+	dst := rl.Rectangle{x + ox, y + oy, w, h}
 	rl.DrawTexturePro(target.texture, src, dst, {}, 0, rl.WHITE)
 }
 
@@ -492,42 +654,143 @@ brick_points :: proc(elapsed_ns: i64) -> i64 {
 	return BRICK_SCORE * multiplier
 }
 
-format_score_label :: proc(score: i64, buf: ^[40]byte) -> cstring {
-	prefix := "SCORE "
-	n := 0
-	for ch in prefix {
-		buf[n] = u8(ch)
-		n += 1
-	}
-	value := score
-	if value < 0 {
-		buf[n] = '-'
-		n += 1
-		value = -value
-	}
-	tmp: [20]byte
-	count := 0
-	if value == 0 {
-		tmp[0] = '0'
-		count = 1
-	} else {
-		for value > 0 && count < len(tmp) {
-			tmp[count] = u8('0') + u8(value % 10)
-			value /= 10
-			count += 1
-		}
-	}
-	for i := count - 1; i >= 0; i -= 1 {
-		buf[n] = tmp[i]
-		n += 1
-	}
-	buf[n] = 0
-	return cstring(&buf[0])
+note_powerup_collected :: proc() {
+	round_powerups += 1
 }
 
-draw_score :: proc(score: i64) {
-	buf: [40]byte
-	text := format_score_label(score, &buf)
+note_ball_lost :: proc() {
+	round_balls_lost += 1
+}
+
+note_life_lost :: proc() {
+	round_lives_lost += 1
+}
+
+// Exact add. A failed allocation leaves the total unchanged.
+score_add_i64 :: proc(score: ^big.Int, delta: i64) {
+	if delta == 0 do return
+	term: big.Int
+	sum: big.Int
+	defer big.destroy(&term, &sum)
+	if big.set(&term, delta) != big.Error.None do return
+	if big.add(&sum, score, &term) != big.Error.None do return
+	big.copy(score, &sum)
+}
+
+// Half, rounded to the nearest integer. A remainder of 0.5 rounds away from zero.
+// The live total is replaced only after the division succeeds.
+score_div2_nearest :: proc(score: ^big.Int) {
+	zero, zerr := big.is_zero(score)
+	if zerr != big.Error.None || zero do return
+	neg, nerr := big.is_negative(score)
+	if nerr != big.Error.None do return
+
+	adjusted: big.Int
+	two: big.Int
+	quot: big.Int
+	defer big.destroy(&adjusted, &two, &quot)
+	if big.copy(&adjusted, score) != big.Error.None do return
+	nudge: i64 = 1
+	if neg do nudge = -1
+	score_add_i64(&adjusted, nudge)
+	if big.set(&two, 2) != big.Error.None do return
+	if big.div(&quot, &adjusted, &two) != big.Error.None do return
+	big.copy(score, &quot)
+}
+
+// The trip from the previous paddle or brick bounce reached another brick.
+note_score_trip_brick :: proc(ball: ^Ball, score: ^big.Int) {
+	if ball.from_bounce {
+		score_mul_i64(score, 2)
+	}
+	ball.from_bounce = true
+}
+
+// The trip ended at the bottom of the playfield.
+note_score_trip_lost :: proc(ball: ^Ball, score: ^big.Int) {
+	if !ball.from_bounce do return
+	ball.from_bounce = false
+	score_div2_nearest(score)
+}
+
+// Exact multiply. A failed allocation leaves the total unchanged.
+score_mul_i64 :: proc(score: ^big.Int, factor: i64) {
+	if factor == 1 do return
+	term: big.Int
+	product: big.Int
+	defer big.destroy(&term, &product)
+	if big.set(&term, factor) != big.Error.None do return
+	if big.mul(&product, score, &term) != big.Error.None do return
+	big.copy(score, &product)
+}
+
+// Whole-pixel faster axis. A stuck ball with no velocity is 0.
+ball_score_speed :: proc(ball: Ball) -> i32 {
+	ax := ball.speed_x
+	ay := ball.speed_y
+	if ax < 0 do ax = -ax
+	if ay < 0 do ay = -ay
+	if ay > ax do return ay
+	return ax
+}
+
+// Once, when the board clears or the last life is lost. Order matches the round rules,
+// so each multiply sees the score as it stands at that step. Speed is added last.
+settle_round_score :: proc(score: ^big.Int, mods: Power_Mods, balls: []Ball, powerups, balls_lost, lives_lost: i64) {
+	score_add_i64(score, powerups * 2)
+
+	extra := (mods.pad_w - PADW) / WIDE_STEP
+	if extra > 0 {
+		for _ in 0..<extra {
+			score_mul_i64(score, 10)
+		}
+	}
+
+	alive: i64 = 0
+	for ball in balls {
+		if ball.alive do alive += 1
+	}
+	score_add_i64(score, alive * 10)
+	score_add_i64(score, balls_lost * -15)
+
+	lives := i64(mods.lives)
+	if lives < 0 do lives = 0
+	score_add_i64(score, lives * 100)
+	score_add_i64(score, lives_lost * -500)
+	// A loss leaves no lives, and multiplying by zero would wipe the brick total.
+	if lives_lost == 0 && lives > 0 {
+		score_mul_i64(score, lives * 150)
+	}
+
+	for ball in balls {
+		if !ball.alive do continue
+		score_add_i64(score, i64(ball_score_speed(ball)) * 10)
+	}
+}
+
+// Caller frees backing. The cstring points into it, including the trailing zero.
+format_score_label :: proc(score: ^big.Int) -> (text: cstring, backing: []u8) {
+	digits, err := big.itoa(score)
+	defer delete(digits)
+	shown := digits
+	if err != big.Error.None || len(digits) == 0 {
+		shown = "0"
+	}
+	prefix := "SCORE "
+	backing = make([]u8, len(prefix) + len(shown) + 1)
+	for ch, i in prefix {
+		backing[i] = u8(ch)
+	}
+	for ch, i in shown {
+		backing[len(prefix) + i] = u8(ch)
+	}
+	backing[len(backing) - 1] = 0
+	return cstring(raw_data(backing)), backing
+}
+
+draw_score :: proc(score: ^big.Int) {
+	text, backing := format_score_label(score)
+	defer delete(backing)
 	size := px(20)
 	margin := px(16)
 	width := measure_text(text, size)
@@ -560,7 +823,7 @@ launch_stuck_balls :: proc(balls: ^[dynamic]Ball, pad_left: i32, mods: Power_Mod
 
 // One pixel at a time, so a fast ball still hits the brick it would otherwise jump.
 // A bounce ends the rest of this frame's steps. Fractions of a pixel wait in the carry.
-step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods, score: ^i64, elapsed_ns: i64, pad_left: i32, pad_vx: f32) {
+step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods, score: ^big.Int, elapsed_ns: i64, pad_left: i32, pad_vx: f32) {
 	if !ball.alive do return
 	if ball.stuck {
 		ball.x = pad_left + ball.stuck_dx
@@ -590,6 +853,7 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 		if s < steps_y do ball.y += ay
 
 		if ball.y > SCH {
+			note_score_trip_lost(ball, score)
 			play_ball_lost(ball.x)
 			lose_ball(ball, balls, mods)
 			return
@@ -626,12 +890,15 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 		falling_onto_pad := active && sep_y < 0 && ball.vy > 0
 		side_hit := active && sep_y == 0 && sep_x != 0
 		if falling_onto_pad || side_hit {
+			ball.from_bounce = true
 			on_speed_bounce(balls, mods)
 			collide_pad(ball, pad_left, PAD_TOP, mods.pad_w, PADH, pad_vx, ball_base_speed(mods^), pad_launch_limit(mods^))
 		}
 
 		hit, broke, hp_before, brick_index := collideRects(bricks, ball)
 		if hit {
+			note_score_trip_brick(ball, score)
+			start_brick_shake()
 			spawn_brick_chips(bricks[brick_index], broke, ball.x, ball.y)
 			if hp_before > 1 && rl.GetTime() < mods.multiply_until {
 				spawn_multiplied_balls(balls, ball.x, ball.y)
@@ -640,7 +907,7 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 			// Neighbors broken by the blast are scored there. This scores the brick the ball itself finished.
 			if broke {
 				grant_brick_drops(bricks[brick_index], falling, mods)
-				score^ += brick_points(elapsed_ns)
+				score_add_i64(score, brick_points(elapsed_ns))
 			}
 			on_speed_bounce(balls, mods)
 		}
@@ -658,6 +925,13 @@ start_level :: proc(index: int, bricks: ^[dynamic]Brick, balls: ^[dynamic]Ball, 
 	clear(falling)
 	clear_brick_chips()
 	clear_animations()
+	shake_left = 0
+	brick_shake_left = 0
+	round_powerups = 0
+	round_balls_lost = 0
+	round_lives_lost = 0
+	round_elapsed_ns = 0
+	round_score_settled = false
 	lives := mods.lives
 	mods^ = {}
 	mods.pad_w = PADW
@@ -699,19 +973,31 @@ game :: proc() {
 	pad_left := SCW / 2 - mods.pad_w / 2
 	pad_motion: Pad_Motion
 	pad_motion_reset(&pad_motion, pad_left)
-	score: i64 = 0
+	score: big.Int
+	big.set(&score, 0)
+	defer big.destroy(&score)
 	level_started: time.Time
 	skipped_ns: i64 = 0
 	pause_started: time.Time
 
 	for !rl.WindowShouldClose() {
+		if screen == .PLAY || screen == .LAST_LIFE {
+			update_screen_shake(rl.GetFrameTime())
+		} else if screen != .PAUSE {
+			shake_left = 0
+		}
+		if screen == .PLAY {
+			update_brick_shake(rl.GetFrameTime())
+		} else if screen != .PAUSE {
+			brick_shake_left = 0
+		}
 		mouse := game_mouse()
 
 		next, start, picked_level, quit := update_menus(screen, mouse, level_index)
 		if quit do break
 		if start {
 			level_index = picked_level
-			score = 0
+			big.set(&score, 0)
 			arm_level_clock(&level_started, &skipped_ns)
 			// Play does not run until the next frame, so place the stuck ball before the first draw.
 			pad_left = i32(mouse.x) - PADW / 2
@@ -746,13 +1032,17 @@ game :: proc() {
 				if !any_ball_alive(balls) {
 					// The life in play is one of the count. 0 is a loss, so the last life does not serve another ball.
 					mods.lives -= 1
-					play_life_lost(int(mods.lives))
+					note_life_lost()
 					if mods.lives > 0 {
+						play_life_lost(int(mods.lives))
+						start_screen_shake()
 						mods.speed_bonus = 0
 						serve_ball(&balls, pad_left, mods.pad_w)
 					} else {
 						mods.lives = 0
-						next = .LOST
+						play_life_finale()
+						start_finale_shake()
+						next = .LAST_LIFE
 					}
 				}
 				if next == .PLAY {
@@ -761,7 +1051,13 @@ game :: proc() {
 					pad_left = i32(mouse.x) - mods.pad_w / 2
 				}
 			}
-		} else if next == screen && (screen == .PAUSE || screen == .LEVEL_END || screen == .LOST) && mods.multiply_until > rl.GetTime() {
+			// Clear wins over a life loss on the same frame, so the life count is already final here.
+			if (next == .LEVEL_END || next == .LAST_LIFE) && !round_score_settled {
+				settle_round_score(&score, mods, balls[:], round_powerups, round_balls_lost, round_lives_lost)
+				round_elapsed_ns = elapsed
+				round_score_settled = true
+			}
+		} else if next == screen && (screen == .PAUSE || screen == .LEVEL_END || screen == .LAST_LIFE || screen == .LOST) && mods.multiply_until > rl.GetTime() {
 			// Keep the x2 countdown from draining while the board is frozen.
 			mods.multiply_until += f64(rl.GetFrameTime())
 		}
@@ -773,42 +1069,54 @@ game :: proc() {
 		}
 		screen = next
 		if screen != .PLAY do pad_motion_reset(&pad_motion, pad_left)
-		if screen == .PLAY || screen == .LEVEL_END || screen == .LOST {
+		if screen == .LAST_LIFE {
+			if !update_life_finale(rl.GetFrameTime()) {
+				screen = .LOST
+			}
+		} else if screen == .PLAY || screen == .LEVEL_END || screen == .LOST {
 			update_animations(rl.GetFrameTime(), screen == .PLAY)
 		}
 
 		// ___
 		rl.BeginTextureMode(game_target)
 		rl.ClearBackground(rl.BLACK)
-		draw_space_background()
+		if screen == .MENU || screen == .LEVEL_SELECT {
+			draw_starfield()
+		} else {
+			draw_space_background()
+		}
 
-		if screen == .PLAY || screen == .PAUSE || screen == .LEVEL_END || screen == .LOST {
+		if screen == .PLAY || screen == .PAUSE || screen == .LEVEL_END || screen == .LAST_LIFE || screen == .LOST {
 			if screen == .PLAY {
 				mouseLocationText := fmt.tprintf("  X = %v, Y = %v", mouse.x, mouse.y)
 				_ = mouseLocationText
 				// rl.DrawText(fmt.caprintf(mouseLocationText), i32(mouse.x), i32(mouse.y), 35, rl.RED)
 			}
-			draw_playfield(bricks, balls, falling, pad_left, mods)
-			if screen == .PLAY || screen == .PAUSE {
-				draw_score(score)
+			draw_playfield(bricks, balls, falling, pad_left, mods, screen == .PLAY)
+			if screen == .PLAY || screen == .PAUSE || screen == .LAST_LIFE {
+				draw_score(&score)
 			}
+			render_life_finale()
 		}
-		draw_menus(screen, mouse, score, level_index)
+		draw_menus(screen, mouse, &score, level_index, mods, balls[:])
 		rl.EndTextureMode()
 
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.BLACK)
-		present_game(game_target)
+		present_game(game_target, screen == .PLAY || screen == .LAST_LIFE)
 		rl.EndDrawing()
 	}
 	delete(bricks)
+	free_end_credits()
 	free_brick_chips()
 	unload_rect_textures()
 	unload_powerup_textures()
 	unload_ball_texture()
+	unload_pad_textures()
 	unload_life_point_texture()
 	unload_animations()
 	unload_space_background()
+	unload_starfield()
 	unload_game_font()
 	rl.UnloadRenderTexture(game_target)
 	rl.CloseWindow()

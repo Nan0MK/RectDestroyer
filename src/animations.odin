@@ -13,6 +13,7 @@ TRAIL_MIN_SPEED :: f32(1.5)
 // The sheet is short. Drawn at its own width it is a thin sliver, so the frame is stretched this many times wider.
 TRAIL_STRETCH :: i32(3)
 EXPLODE_SCALE :: i32(2)
+BALL_LOST_SCALE :: i32(3)
 ANIM_PLAY_MAX :: 128
 
 Anim_Kind :: enum {
@@ -29,10 +30,12 @@ Anim_Clip :: struct {
 
 // One playing sheet. x, y is the anchor for that kind: the ball's x for ball_lost,
 // the life icon's top-left for life_lost, and the brick's top-left for explode.
+// finale is the last life: drawn huge at the center while the board stays frozen.
 Anim_Play :: struct {
-	kind: Anim_Kind,
-	x, y: i32,
-	age:  f32,
+	kind:   Anim_Kind,
+	x, y:   i32,
+	age:    f32,
+	finale: bool,
 }
 
 clips: [Anim_Kind]Anim_Clip
@@ -163,6 +166,54 @@ play_life_lost :: proc(index: int) {
 	push_play({kind = .LIFE_LOST, x = x, y = y})
 }
 
+// The last life. The board stays frozen until this sheet finishes.
+play_life_finale :: proc() {
+	push_play({kind = .LIFE_LOST, finale = true})
+}
+
+// True while the last-life sheet is still on screen. Other animations stay put.
+update_life_finale :: proc(dt: f32) -> bool {
+	ensure_animations()
+	step := dt
+	if step < 0 do step = 0
+	playing := false
+	for i := len(plays) - 1; i >= 0; i -= 1 {
+		if !plays[i].finale do continue
+		plays[i].age += step
+		count := len(clips[plays[i].kind].frames)
+		if count < 1 || plays[i].age >= f32(count) * ANIM_FRAME_DT {
+			unordered_remove(&plays, i)
+			continue
+		}
+		playing = true
+	}
+	return playing
+}
+
+// Two thirds of the shorter playfield side, centered.
+life_finale_box :: proc() -> (x, y, size: i32) {
+	size = SCW
+	if SCH < size do size = SCH
+	size = size * 2 / 3
+	if size < 1 do size = 1
+	x = (SCW - size) / 2
+	y = (SCH - size) / 2
+	return
+}
+
+render_life_finale :: proc() {
+	ensure_animations()
+	clip := clips[.LIFE_LOST]
+	count := len(clip.frames)
+	if clip.tex.id == 0 || count < 1 do return
+	for play in plays {
+		if play.kind != .LIFE_LOST || !play.finale do continue
+		src := clip.frames[anim_frame_index(play.age, count, false)]
+		x, y, size := life_finale_box()
+		draw_anim(clip.tex, src, x, y, size, size, 255)
+	}
+}
+
 play_explosion :: proc(brick_x, brick_y: i32) {
 	push_play({kind = .EXPLODE, x = brick_x, y = brick_y})
 }
@@ -254,13 +305,14 @@ render_animations :: proc() {
 		src := clip.frames[anim_frame_index(play.age, count, false)]
 		switch play.kind {
 		case .BALL_LOST:
-			w := i32(src.width)
-			h := i32(src.height)
+			w := i32(src.width) * BALL_LOST_SCALE
+			h := i32(src.height) * BALL_LOST_SCALE
 			left := play.x - w / 2
 			if left < 0 do left = 0
 			if w < SCW && left > SCW - w do left = SCW - w
 			draw_anim(clip.tex, src, left, SCH - h, w, h, 255)
 		case .LIFE_LOST:
+			if play.finale do continue
 			draw_anim(clip.tex, src, play.x, play.y, LIFE_POINT_SIZE, LIFE_POINT_SIZE, 255)
 		case .EXPLODE:
 			// 2× scale, then the width is stretched to the brick the blast plays on.

@@ -1,5 +1,6 @@
 package src
 
+import big "core:math/big"
 import "core:testing"
 import rl "vendor:raylib"
 
@@ -69,7 +70,9 @@ test_orthogonal_and_bomb_chain :: proc(t: ^testing.T) {
 	falling := make([dynamic]Falling_Powerup)
 	defer delete(falling)
 	mods: Power_Mods
-	score: i64
+	score: big.Int
+	defer big.destroy(&score)
+	big.set(&score, 0)
 	explode_from_hit(&bricks, 0, &falling, &mods, &score, 1)
 
 	testing.expect_value(t, bricks[0].hp, i32(0))
@@ -80,7 +83,7 @@ test_orthogonal_and_bomb_chain :: proc(t: ^testing.T) {
 	// Two steps to the right. Only the first bomb's chain reaches it.
 	testing.expect_value(t, bricks[4].hp, i32(3))
 	testing.expect_value(t, len(falling), 0)
-	testing.expect_value(t, score, brick_points(1) * 2)
+	expect_score_i64(t, &score, brick_points(1) * 2)
 
 	plain := make([dynamic]Brick)
 	defer delete(plain)
@@ -266,6 +269,180 @@ test_anim_frames_and_trail :: proc(t: ^testing.T) {
 	testing.expect_value(t, frames[0].width, f32(width))
 	testing.expect_value(t, frames[1].y, f32(0))
 	testing.expect_value(t, frames[1].height, f32(3))
+}
+
+@(test)
+test_settle_round_score :: proc(t: ^testing.T) {
+	mods := Power_Mods{pad_w = PADW + WIDE_STEP, lives = 2}
+	balls := make([dynamic]Ball)
+	defer delete(balls)
+	append(&balls, Ball{speed_x = 3, speed_y = -1, alive = true})
+	append(&balls, Ball{alive = true, stuck = true})
+	append(&balls, Ball{speed_x = 9, speed_y = 9, alive = false})
+	// 100 + 2, times 10, + 20, - 15, + 200, times 300, then + 30 for the faster ball.
+	expect_settled(t, 100, mods, balls[:], 1, 1, 0, "SCORE 367530")
+
+	lost := Power_Mods{pad_w = PADW, lives = 0}
+	expect_settled(t, 50, lost, nil, 0, 2, 1, "SCORE -480")
+
+	plain := Power_Mods{pad_w = PADW, lives = 1}
+	stuck := make([dynamic]Ball)
+	defer delete(stuck)
+	append(&stuck, Ball{alive = true, stuck = true})
+	// 5 + 10 for the stuck ball, + 100 for the life, times 150. The stuck ball has no speed.
+	expect_settled(t, 5, plain, stuck[:], 0, 0, 0, "SCORE 17250")
+
+	// Two extra lengths multiply twice. A life was lost, so the perfect-life term stays off.
+	twice := Power_Mods{pad_w = PADW + WIDE_STEP * 2, lives = 0}
+	expect_settled(t, 4, twice, nil, 0, 0, 1, "SCORE -100")
+
+	// A leftover under one 50-pixel step is not an extra length.
+	partial := Power_Mods{pad_w = PADW + WIDE_STEP - 1, lives = 0}
+	expect_settled(t, 4, partial, nil, 0, 0, 1, "SCORE -496")
+
+	// Lives still held, but one was spent, so the score is not multiplied by lives * 150.
+	spent := Power_Mods{pad_w = PADW, lives = 3}
+	expect_settled(t, 10, spent, nil, 0, 0, 1, "SCORE -190")
+	kept := Power_Mods{pad_w = PADW, lives = 3}
+	expect_settled(t, 10, kept, nil, 0, 0, 0, "SCORE 139500")
+
+	angled := Power_Mods{pad_w = PADW, lives = 0}
+	one := make([dynamic]Ball)
+	defer delete(one)
+	append(&one, Ball{speed_x = -4, speed_y = 2, alive = true})
+	expect_settled(t, 0, angled, one[:], 0, 0, 0, "SCORE 50")
+
+	// Past either end of i64. One extra paddle length, then the ball penalty.
+	past := Power_Mods{pad_w = PADW + WIDE_STEP, lives = 0}
+	expect_settled(t, 9_223_372_036_854_775_807, past, nil, 0, 1, 0, "SCORE 92233720368547758055")
+	expect_settled(t, ~i64(9_223_372_036_854_775_807), past, nil, 0, 0, 0, "SCORE -92233720368547758080")
+
+	// One fast brick times 10, forty times, then the life penalty. This does not fit in i128.
+	wide := Power_Mods{pad_w = PADW + WIDE_STEP * 40, lives = 0}
+	expect_settled(t, 6_000_000_000_000, wide, nil, 0, 0, 1, "SCORE 59999999999999999999999999999999999999999999999999500")
+}
+
+@(test)
+test_score_trip :: proc(t: ^testing.T) {
+	score: big.Int
+	defer big.destroy(&score)
+	big.set(&score, 100)
+	ball: Ball
+
+	// The first brick after a launch has no bounce behind it.
+	note_score_trip_brick(&ball, &score)
+	expect_score_i64(t, &score, 100)
+	testing.expect(t, ball.from_bounce)
+
+	// The next brick doubles, and that hit starts another trip.
+	note_score_trip_brick(&ball, &score)
+	expect_score_i64(t, &score, 200)
+	note_score_trip_lost(&ball, &score)
+	expect_score_i64(t, &score, 100)
+	testing.expect(t, !ball.from_bounce)
+
+	// A loss with no open trip leaves the score alone.
+	note_score_trip_lost(&ball, &score)
+	expect_score_i64(t, &score, 100)
+
+	expect_half(t, 5, 3)
+	expect_half(t, 4, 2)
+	expect_half(t, 1, 1)
+	expect_half(t, 0, 0)
+	expect_half(t, -5, -3)
+	expect_half(t, -4, -2)
+	expect_half(t, -1, -1)
+
+	wide: big.Int
+	defer big.destroy(&wide)
+	big.set(&wide, "100000000000000000001")
+	score_div2_nearest(&wide)
+	expect_label(t, &wide, "SCORE 50000000000000000001")
+}
+
+expect_half :: proc(t: ^testing.T, start, want: i64) {
+	score: big.Int
+	defer big.destroy(&score)
+	big.set(&score, start)
+	score_div2_nearest(&score)
+	expect_score_i64(t, &score, want)
+}
+
+expect_settled :: proc(t: ^testing.T, start: i64, mods: Power_Mods, balls: []Ball, powerups, balls_lost, lives_lost: i64, want: string) {
+	score: big.Int
+	defer big.destroy(&score)
+	big.set(&score, start)
+	settle_round_score(&score, mods, balls, powerups, balls_lost, lives_lost)
+	expect_label(t, &score, want)
+}
+
+expect_score_i64 :: proc(t: ^testing.T, score: ^big.Int, want: i64) {
+	other: big.Int
+	defer big.destroy(&other)
+	big.set(&other, want)
+	same, err := big.int_equals(score, &other)
+	testing.expect(t, err == big.Error.None && same)
+}
+
+expect_label :: proc(t: ^testing.T, score: ^big.Int, want: string) {
+	_, backing := format_score_label(score)
+	defer delete(backing)
+	ok := len(backing) == len(want) + 1 && backing[len(want)] == 0
+	if ok {
+		for i in 0..<len(want) {
+			if backing[i] != u8(want[i]) {
+				ok = false
+				break
+			}
+		}
+	}
+	testing.expect(t, ok)
+}
+
+@(test)
+test_round_powerup_and_ball_tallies :: proc(t: ^testing.T) {
+	round_powerups = 0
+	mods: Power_Mods
+	apply_powerup(.WIDE, &mods)
+	apply_powerup(.LIFE, &mods)
+	testing.expect_value(t, round_powerups, i64(0))
+
+	falling := make([dynamic]Falling_Powerup)
+	defer delete(falling)
+	ball_drop := Brick{drop_count = 2}
+	ball_drop.drops[0] = {kind = .FAST, target = .BALL, chance = 100}
+	ball_drop.drops[1] = {kind = .LIFE, target = .BALL, chance = 100}
+	grant_brick_drops(ball_drop, &falling, &mods)
+	testing.expect_value(t, round_powerups, i64(2))
+
+	pad_drop := Brick{drop_count = 1}
+	pad_drop.drops[0] = {kind = .WIDE, target = .PAD, chance = 100}
+	grant_brick_drops(pad_drop, &falling, &mods)
+	testing.expect_value(t, round_powerups, i64(2))
+	testing.expect_value(t, len(falling), 1)
+
+	bomb_drop := Brick{drop_count = 1}
+	bomb_drop.drops[0] = {kind = .BOMB, target = .RECT, chance = 100}
+	grant_brick_drops(bomb_drop, &falling, &mods)
+	testing.expect_value(t, round_powerups, i64(2))
+
+	mods.pad_w = 80
+	falling[0].x = 16
+	falling[0].y = 16
+	update_falling_powerups(&falling, 0, 0, 20, &mods, 0)
+	testing.expect_value(t, round_powerups, i64(3))
+	testing.expect_value(t, len(falling), 0)
+
+	before := round_balls_lost
+	balls := make([dynamic]Ball)
+	defer delete(balls)
+	append(&balls, Ball{alive = true})
+	lose_ball(&balls[0], &balls, &mods)
+	testing.expect_value(t, round_balls_lost, before + 1)
+	lose_ball(&balls[0], &balls, &mods)
+	testing.expect_value(t, round_balls_lost, before + 1)
+	serve_ball(&balls, 0, PADW)
+	testing.expect_value(t, round_balls_lost, before + 1)
 }
 
 expect_rect :: proc(t: ^testing.T, types: []Rect_Type, symbol: rune, hp: i32, color: rl.Color, drops: []Brick_Drop) {
