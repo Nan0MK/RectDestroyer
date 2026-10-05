@@ -22,10 +22,10 @@ LIFE_POINT_GAP: i32 = 16
 LIFE_POINT_OVER_ALPHA :: u8(128)
 
 // Slow compared with the ball, which moves one pixel per frame until fast raises it.
-// The drop art is 16×16. It is drawn at 2×, the same scale as a brick, and this box is both the picture and the catch.
+// The drop art is 16×16. It is drawn at 50×50. This box is both the picture and the catch.
 DROP_SPEED :: 90.0
-DROP_W :: 32
-DROP_H :: 32
+DROP_W :: 50
+DROP_H :: 50
 
 // fast raises a living ball's faster axis up to 1 + bonus on each bounce, and stops at MAX_BALL_SPEED.
 // A ball already above that floor keeps its speed.
@@ -490,7 +490,7 @@ render_falling_powerups :: proc(drops: [dynamic]Falling_Powerup) {
 		}
 		text, fill := powerup_mark(drop.kind)
 		rl.DrawRectangle(left, top, DROP_W, DROP_H, fill)
-		size: i32 = 16
+		size: i32 = DROP_H / 2
 		width := measure_text(text, size)
 		draw_text(text, left + (DROP_W - width) / 2, top + (DROP_H - size) / 2, size, rl.BLACK)
 	}

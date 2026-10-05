@@ -50,11 +50,11 @@ BALL_R :: 12
 // One destroyed brick adds BRICK_SCORE * multiplier. All of it is integer.
 // multiplier = SCORE_SCALE / elapsed_ns - elapsed_ns / NS_PER_MINUTE.
 // Elapsed is nanoseconds since this level started, pause time not counted, and at least 1 so the division is defined.
-// There is no clamp. 10 ns is 600 billion. The multiplier is 0 around 10 minutes and -27 at 30 minutes.
+// There is no clamp. 10 ns is 1.2 trillion. The multiplier is 0 at 14 minutes and -24 at 30 minutes.
 // That running total is the score during play. settle_round_score adds the round terms once, at the end.
 // The total is an arbitrary-precision integer. The end-of-round multiplies are not capped.
 BRICK_SCORE :: i64(1)
-SCORE_SCALE :: i64(6_000_000_000_000)
+SCORE_SCALE :: i64(12_000_000_000_000)
 NS_PER_MINUTE :: i64(60_000_000_000)
 
 // Tallies for the level in play. start_level clears them. The score reads them once, when the round ends.
