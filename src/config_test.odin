@@ -469,6 +469,22 @@ test_round_powerup_and_ball_tallies :: proc(t: ^testing.T) {
 	testing.expect_value(t, round_balls_lost, before + 1)
 }
 
+@(test)
+test_brick_sound_variant :: proc(t: ^testing.T) {
+	testing.expect_value(t, brick_sound_variant("basic_rect"), i32(0))
+	testing.expect_value(t, brick_sound_variant("rect_wide"), i32(0))
+	testing.expect_value(t, brick_sound_variant("rect_bomb"), i32(0))
+	testing.expect_value(t, brick_sound_variant("rect_stick"), i32(0))
+	testing.expect_value(t, brick_sound_variant("rect_life"), i32(0))
+	testing.expect_value(t, brick_sound_variant("rect_multiply"), i32(0))
+	testing.expect_value(t, brick_sound_variant("rect_fast"), i32(0))
+	testing.expect_value(t, brick_sound_variant("tough_rect"), i32(0))
+	testing.expect_value(t, brick_sound_variant("strong_rect"), i32(1))
+	testing.expect_value(t, brick_sound_variant("super_rect"), i32(1))
+	testing.expect_value(t, brick_sound_variant("tough"), i32(0))
+	testing.expect_value(t, brick_sound_variant(""), i32(0))
+}
+
 expect_rect :: proc(t: ^testing.T, types: []Rect_Type, symbol: rune, hp: i32, color: rl.Color, drops: []Brick_Drop) {
 	got, ok := find_rect_type(types, symbol)
 	testing.expectf(t, ok, "missing rect %c", symbol)

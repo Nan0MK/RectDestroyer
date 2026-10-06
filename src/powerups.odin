@@ -280,6 +280,7 @@ consider_bomb :: proc(bricks: ^[dynamic]Brick, index: int, exploded: []bool, que
 	exploded[index] = true
 	append(queue, index)
 	play_explosion(bricks[index].x, bricks[index].y)
+	play_bomb_explode()
 }
 
 damage_from_blast :: proc(bricks: ^[dynamic]Brick, index: int, exploded: []bool, queue: ^[dynamic]int, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods, score: ^big.Int, elapsed_ns: i64) {

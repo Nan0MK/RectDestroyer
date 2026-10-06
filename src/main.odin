@@ -900,6 +900,7 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 			note_score_trip_brick(ball, score)
 			start_brick_shake()
 			spawn_brick_chips(bricks[brick_index], broke, ball.x, ball.y)
+			play_ball_brick_sound(bricks[brick_index].sound, broke)
 			if hp_before > 1 && rl.GetTime() < mods.multiply_until {
 				spawn_multiplied_balls(balls, ball.x, ball.y)
 			}
@@ -960,6 +961,7 @@ game :: proc() {
 	game_target := rl.LoadRenderTexture(SCW, SCH)
 	rl.SetTextureFilter(game_target.texture, .BILINEAR)
 
+	ensure_sounds()
 	rl.SetTargetFPS(500)
 	rand.reset(u64(time.to_unix_nanoseconds(time.now())))
 	screen := Screen.MENU
@@ -1080,6 +1082,7 @@ game :: proc() {
 		} else if screen == .PLAY || screen == .LEVEL_END || screen == .LOST {
 			update_animations(rl.GetFrameTime(), screen == .PLAY)
 		}
+		update_theme(screen)
 		// The level score stays on screen while LEVEL_END is up, so a failed bank can retry.
 		// A loss does not count the level that was still in play.
 		if screen == .LEVEL_END && !level_banked {
@@ -1130,6 +1133,7 @@ game :: proc() {
 	unload_space_background()
 	unload_starfield()
 	unload_game_font()
+	unload_sounds()
 	rl.UnloadRenderTexture(game_target)
 	rl.CloseWindow()
 }

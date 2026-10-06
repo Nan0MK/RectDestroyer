@@ -1,6 +1,7 @@
 package src
 
 import "core:c"
+import "core:math"
 import big "core:math/big"
 import rl "vendor:raylib"
 
@@ -199,7 +200,6 @@ update_menus :: proc(screen: Screen, mouse: rl.Vector2, playing_level: int) -> (
 		back_x, back_y, back_w, back_h := scores_button_rect(1)
 		if button_clicked(clear_x, clear_y, clear_w, clear_h, mouse) {
 			clear_saved_scores()
-			scores_scroll = 0
 		} else if button_clicked(back_x, back_y, back_w, back_h, mouse) {
 			next = .MENU
 		}
@@ -213,8 +213,6 @@ credits_digits: []u8
 credits_overall: []u8
 credits_scroll: f64
 credits_for: Screen
-scores_scroll: f64
-scores_for: Screen
 
 free_digit_buf :: proc(buf: ^[]u8) {
 	delete(buf^)
@@ -478,20 +476,6 @@ draw_digit_line :: proc(digits: []u8, line_i, cpl: int, x, y, size: i32, line_bu
 	draw_text(cstring(raw_data(line_buf)), x, y, size, rl.WHITE)
 }
 
-draw_digit_text :: proc(digits: string, line_i, cpl: int, x, y, size: i32, line_buf: []u8) {
-	start := line_i * cpl
-	end := start + cpl
-	if start > len(digits) do start = len(digits)
-	if end > len(digits) do end = len(digits)
-	n := 0
-	for i in start ..< end {
-		line_buf[n] = digits[i]
-		n += 1
-	}
-	if n < len(line_buf) do line_buf[n] = 0
-	draw_text(cstring(raw_data(line_buf)), x, y, size, rl.WHITE)
-}
-
 prepare_end_credits :: proc(screen: Screen, score: ^big.Int) {
 	if screen != .LEVEL_END && screen != .LOST {
 		if len(credits_digits) > 0 || len(credits_overall) > 0 {
@@ -518,94 +502,159 @@ prepare_end_credits :: proc(screen: Screen, score: ^big.Int) {
 	credits_for = screen
 }
 
-// One saved overall score: a "SCORE n" header, its wrapped digits, then a gap.
-saved_line_count :: proc(cpl: int) -> int {
-	total := 0
-	for line in score_lines {
-		lines := 1
-		if len(line) > 0 do lines = (len(line) + cpl - 1) / cpl
-		total += 2 + lines
-	}
-	return total
+// Each saved score is flat text in the center of the playfield. It scales from a speck to larger than the screen.
+// fill is the larger of the block's width and height, as a fraction of the playfield.
+// The size is multiplied by the same amount each moment, so the zoom does not rush and then crawl.
+// The next score waits SCORE_POP_GAP seconds after the previous one finishes, so the zooms do not overlap.
+SCORE_POP_CPL :: 12
+SCORE_POP_SECONDS :: f32(6)
+SCORE_POP_GAP :: f32(1)
+SCORE_POP_TINY :: f32(0.05)
+SCORE_POP_CLEAR :: f32(0.4)
+SCORE_POP_FADE :: f32(2.05)
+SCORE_POP_GIANT :: f32(2.5)
+SCORE_POP_REF :: f32(100)
+
+score_pop_t: f32
+
+// phase 0 is the speck. phase 1 is the giant size. Equal time covers an equal ratio of sizes.
+score_pop_fill :: proc(phase: f32) -> f32 {
+	p := phase
+	if p < 0 do p = 0
+	if p > 1 do p = 1
+	if SCORE_POP_TINY < 0.001 do return SCORE_POP_GIANT
+	return SCORE_POP_TINY * math.pow(SCORE_POP_GIANT / SCORE_POP_TINY, p)
 }
 
-// kind 0 is the header, 1 is a digit line, 2 is the gap under that score.
-locate_saved_line :: proc(index, cpl: int) -> (which, kind, offset: int) {
-	at := 0
-	for s in 0 ..< len(score_lines) {
-		n := len(score_lines[s])
-		lines := 1
-		if n > 0 do lines = (n + cpl - 1) / cpl
-		if index < at + 1 do return s, 0, 0
-		if index < at + 1 + lines do return s, 1, index - (at + 1)
-		if index < at + 2 + lines do return s, 2, 0
-		at += 2 + lines
+score_pop_alpha :: proc(fill: f32) -> u8 {
+	in_span := SCORE_POP_CLEAR - SCORE_POP_TINY
+	in_t := f32(1)
+	if in_span > 0.001 {
+		in_t = (fill - SCORE_POP_TINY) / in_span
 	}
-	return 0, 2, 0
+	if in_t < 0 do in_t = 0
+	if in_t > 1 do in_t = 1
+	in_t = in_t * in_t * (3 - 2 * in_t)
+	out_t := f32(1)
+	out_span := SCORE_POP_GIANT - SCORE_POP_FADE
+	if fill > SCORE_POP_FADE && out_span > 0.001 {
+		out_t = 1 - (fill - SCORE_POP_FADE) / out_span
+		if out_t < 0 do out_t = 0
+	}
+	a := in_t * out_t * 255
+	if a < 0 do a = 0
+	if a > 255 do a = 255
+	return u8(a + 0.5)
 }
 
-// Past scores rise like the end-of-round crawl so a long number can be read.
-draw_saved_scores :: proc() {
-	if len(score_lines) == 0 {
-		draw_centered_text("NO SCORES", px(220), px(32), rl.WHITE)
+score_measure :: proc(text: cstring, size: f32) -> f32 {
+	ensure_game_font()
+	base := game_font.baseSize
+	if base < 1 do base = 1
+	if game_font.texture.id != 0 {
+		return rl.MeasureTextEx(game_font, text, size, size / f32(base)).x
+	}
+	px := i32(size + 0.5)
+	if px < 1 do px = 1
+	return f32(rl.MeasureText(text, px))
+}
+
+score_draw_line :: proc(text: cstring, x, y, size: f32, color: rl.Color) {
+	ensure_game_font()
+	base := game_font.baseSize
+	if base < 1 do base = 1
+	if game_font.texture.id != 0 {
+		rl.DrawTextEx(game_font, text, {x, y}, size, size / f32(base), color)
 		return
 	}
+	px := i32(size + 0.5)
+	if px < 1 do px = 1
+	rl.DrawText(text, i32(x), i32(y), px, color)
+}
 
-	size := px(26)
-	line_h := size + px(8)
-	if line_h < 1 do line_h = 1
-	_, clear_y, _, _ := scores_button_rect(0)
-	view_top := px(110)
-	view_h := clear_y - px(16) - view_top
-	if view_h < line_h do view_h = line_h
+score_digit_line :: proc(digits: string, line_i: int, buf: ^[SCORE_POP_CPL + 1]byte) -> int {
+	start := line_i * SCORE_POP_CPL
+	end := start + SCORE_POP_CPL
+	if start > len(digits) do start = len(digits)
+	if end > len(digits) do end = len(digits)
+	n := 0
+	for i in start ..< end {
+		buf[n] = digits[i]
+		n += 1
+	}
+	buf[n] = 0
+	return n
+}
 
-	cpl := credits_chars_per_line(size, SCW - px(32))
-	if cpl < 1 do cpl = 1
-	total := saved_line_count(cpl)
-	if total < 1 do return
-
-	dt := f64(rl.GetFrameTime())
+// One score at a time. Its scale moves at a constant rate, then the screen stays clear for SCORE_POP_GAP.
+draw_score_pops :: proc() {
+	n := len(score_lines)
+	if n == 0 || SCW < 1 || SCH < 1 do return
+	dt := rl.GetFrameTime()
 	if dt < 0 do dt = 0
 	if dt > 0.05 do dt = 0.05
-	scores_scroll += f64(px(36)) * dt
-	span := f64(total * int(line_h) + int(view_h))
-	if span < 1 do span = 1
-	for scores_scroll >= span {
-		scores_scroll -= span
+	slot := SCORE_POP_SECONDS + SCORE_POP_GAP
+	cycle := slot * f32(n)
+	if cycle < 0.001 do return
+	score_pop_t += dt
+	for score_pop_t >= cycle do score_pop_t -= cycle
+	if score_pop_t < 0 do score_pop_t = 0
+
+	index := int(score_pop_t / slot)
+	if index < 0 do index = 0
+	if index >= n do index = n - 1
+	local := score_pop_t - f32(index) * slot
+	if local < 0 || local >= SCORE_POP_SECONDS do return
+	draw_score_pop(index, score_lines[index], local / SCORE_POP_SECONDS)
+}
+
+draw_score_pop :: proc(index: int, digits: string, phase: f32) {
+	fill := score_pop_fill(phase)
+	alpha := score_pop_alpha(fill)
+	if alpha == 0 do return
+
+	header: [64]byte
+	hn := append_text(&header, 0, "SCORE ")
+	hn = append_i64(&header, hn, i64(index + 1))
+	header[hn] = 0
+
+	digit_lines := 1
+	if len(digits) > 0 {
+		digit_lines = (len(digits) + SCORE_POP_CPL - 1) / SCORE_POP_CPL
 	}
+	if digit_lines < 1 do digit_lines = 1
+	total_lines := digit_lines + 1
 
-	base := f64(view_top + view_h) - scores_scroll
-	first := int((f64(view_top) - base) / f64(line_h))
-	if first < 0 do first = 0
-	if first > total do first = total
-	last := first + int(view_h / line_h) + 3
-	if last > total do last = total
-	if first > last do first = last
-
-	digit_w := measure_text("0", size)
-	if digit_w < 1 do digit_w = size
-	block_w := i32(cpl) * digit_w
-	digit_x := (SCW - block_w) / 2
-	if digit_x < px(16) do digit_x = px(16)
-	line_buf := make([]u8, cpl + 1)
-	defer delete(line_buf)
-
-	rl.BeginScissorMode(0, c.int(view_top), c.int(SCW), c.int(view_h))
-	for i in first ..< last {
-		y := i32(base + f64(i) * f64(line_h))
-		which, kind, offset := locate_saved_line(i, cpl)
-		if kind == 2 do continue
-		if kind == 0 {
-			label: [64]byte
-			n := append_text(&label, 0, "SCORE ")
-			n = append_i64(&label, n, i64(which + 1))
-			label[n] = 0
-			draw_centered_line(cstring(&label[0]), y, size)
-			continue
-		}
-		draw_digit_text(score_lines[which], offset, cpl, digit_x, y, size, line_buf)
+	ref := SCORE_POP_REF
+	header_w := score_measure(cstring(&header[0]), ref)
+	max_w := header_w
+	line_buf: [SCORE_POP_CPL + 1]byte
+	for li in 0 ..< digit_lines {
+		if score_digit_line(digits, li, &line_buf) == 0 do continue
+		w := score_measure(cstring(&line_buf[0]), ref)
+		if w > max_w do max_w = w
 	}
-	rl.EndScissorMode()
+	line_step := ref * 7 / 6
+	ink_h := line_step * f32(total_lines - 1) + ref
+	limit := ink_h / f32(SCH)
+	wide := max_w / f32(SCW)
+	if wide > limit do limit = wide
+	if limit < 0.001 do return
+	size := ref * fill / limit
+
+	color := rl.Color{255, 255, 255, alpha}
+	step := size * 7 / 6
+	block_h := step * f32(total_lines - 1) + size
+	y := (f32(SCH) - block_h) * 0.5
+	hw := score_measure(cstring(&header[0]), size)
+	score_draw_line(cstring(&header[0]), (f32(SCW) - hw) * 0.5, y, size, color)
+	y += step
+	for li in 0 ..< digit_lines {
+		if score_digit_line(digits, li, &line_buf) == 0 do continue
+		w := score_measure(cstring(&line_buf[0]), size)
+		score_draw_line(cstring(&line_buf[0]), (f32(SCW) - w) * 0.5, y, size, color)
+		y += step
+	}
 }
 
 // Main menu, level select, and past scores fill the screen. Pause, level clear, and you lost draw over the playfield.
@@ -663,14 +712,14 @@ draw_menus :: proc(screen: Screen, mouse: rl.Vector2, score: ^big.Int, playing_l
 		draw_button("MAIN MENU", menu_x, menu_y, menu_w, menu_h, mouse)
 		draw_button("QUIT", quit_x, quit_y, quit_w, quit_h, mouse)
 	case .SCORES:
-		if scores_for != .SCORES do scores_scroll = 0
-		scores_for = .SCORES
+		draw_score_pops()
 		draw_centered_text("PAST SCORES", px(48), px(36), rl.WHITE)
-		draw_saved_scores()
+		if len(score_lines) == 0 {
+			draw_centered_text("NO SCORES", px(220), px(32), rl.WHITE)
+		}
 		clear_x, clear_y, clear_w, clear_h := scores_button_rect(0)
 		back_x, back_y, back_w, back_h := scores_button_rect(1)
 		draw_button("CLEAR SCORES", clear_x, clear_y, clear_w, clear_h, mouse)
 		draw_button("BACK", back_x, back_y, back_w, back_h, mouse)
 	}
-	if screen != .SCORES do scores_for = screen
 }

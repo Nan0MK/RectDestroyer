@@ -20,6 +20,8 @@ level_banked: bool
 
 // Digit text of each saved overall score, oldest first.
 score_lines: [dynamic]string
+// Bumped when that list changes, so the past-scores cards rebuild.
+score_list_rev: int
 
 score_add_big :: proc(dst, src: ^big.Int) -> bool {
 	sum: big.Int
@@ -93,6 +95,7 @@ load_saved_scores :: proc() {
 		}
 		i = j + 1
 	}
+	score_list_rev += 1
 }
 
 write_saved_scores :: proc() -> bool {
@@ -115,7 +118,10 @@ append_saved_score :: proc(score: ^big.Int) -> bool {
 	defer delete(text)
 	if err != big.Error.None || len(text) == 0 || !score_line_ok(text) do return false
 	append(&score_lines, strings.clone(text))
-	if write_saved_scores() do return true
+	if write_saved_scores() {
+		score_list_rev += 1
+		return true
+	}
 	if len(score_lines) > 0 {
 		dropped := pop(&score_lines)
 		delete(dropped)
@@ -141,6 +147,7 @@ clear_saved_scores :: proc() {
 	}
 	for line in kept do delete(line)
 	delete(kept)
+	score_list_rev += 1
 }
 
 init_saved_scores :: proc() {

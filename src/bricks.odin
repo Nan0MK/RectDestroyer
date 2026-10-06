@@ -29,10 +29,13 @@ Rect_Type :: struct {
 	texture:    rl.Texture2D,
 	drops:      [MAX_DROPS]Brick_Drop,
 	drop_count: int,
+	// 0 plays hit_0 and destroy_0. 1 is strong and super. Tough stays on 0.
+	sound:      i32,
 }
 
 // One brick per level-file cell. Rows break on newlines. Space and '.' are empty cells.
 // hp falls by 1 on each hit. The brick is gone at 0.
+// sound is copied from the type. A ball hit plays that variant.
 Brick :: struct {
 	x, y:       i32,
 	kind:       rune,
@@ -41,6 +44,7 @@ Brick :: struct {
 	texture:    rl.Texture2D,
 	drops:      [MAX_DROPS]Brick_Drop,
 	drop_count: int,
+	sound:      i32,
 }
 
 // Loaded once and reused across levels. The name is the rect_types.txt name.
@@ -205,6 +209,7 @@ add_rect_type :: proc(types: ^[dynamic]Rect_Type, line: string, powerups: []Powe
 		texture = texture_for_rect_name(name),
 		drops = drops,
 		drop_count = drop_count,
+		sound = brick_sound_variant(name),
 	})
 }
 
@@ -424,6 +429,7 @@ generateRects :: proc(level: string) -> [dynamic]Brick {
 					texture = t.texture,
 					drops = t.drops,
 					drop_count = t.drop_count,
+					sound = t.sound,
 				})
 			}
 			col += 1
