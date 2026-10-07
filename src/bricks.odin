@@ -31,6 +31,8 @@ Rect_Type :: struct {
 	drop_count: int,
 	// 0 plays hit_0 and destroy_0. 1 is strong and super. Tough stays on 0.
 	sound:      i32,
+	// Picture is the matching sheet in src/textures/animations instead of a flat texture.
+	anim:       bool,
 }
 
 // One brick per level-file cell. Rows break on newlines. Space and '.' are empty cells.
@@ -45,6 +47,8 @@ Brick :: struct {
 	drops:      [MAX_DROPS]Brick_Drop,
 	drop_count: int,
 	sound:      i32,
+	// Picture is the matching sheet in src/textures/animations instead of a flat texture.
+	anim:       bool,
 }
 
 // Loaded once and reused across levels. The name is the rect_types.txt name.
@@ -109,6 +113,21 @@ orthogonal_bricks :: proc(a, b: Brick) -> bool {
 	step_x := RECT_W + RECT_GAP
 	step_y := RECT_H + RECT_GAP
 	return (dx == step_x && dy == 0) || (dx == 0 && dy == step_y)
+}
+
+// Manhattan distance in grid steps. An orthogonal neighbor is 1. A diagonal is 2.
+// A brick that is not on the same grid is too far to be in a blast.
+brick_step_dist :: proc(a, b: Brick) -> i32 {
+	dx := a.x - b.x
+	if dx < 0 do dx = -dx
+	dy := a.y - b.y
+	if dy < 0 do dy = -dy
+	step_x := RECT_W + RECT_GAP
+	step_y := RECT_H + RECT_GAP
+	if step_x < 1 do step_x = 1
+	if step_y < 1 do step_y = 1
+	if dx % step_x != 0 || dy % step_y != 0 do return max(i32)
+	return dx / step_x + dy / step_y
 }
 
 skip_ws :: proc(s: string, index: int) -> int {
@@ -210,6 +229,7 @@ add_rect_type :: proc(types: ^[dynamic]Rect_Type, line: string, powerups: []Powe
 		drops = drops,
 		drop_count = drop_count,
 		sound = brick_sound_variant(name),
+		anim = rect_anim_available(name),
 	})
 }
 
@@ -430,6 +450,7 @@ generateRects :: proc(level: string) -> [dynamic]Brick {
 					drops = t.drops,
 					drop_count = t.drop_count,
 					sound = t.sound,
+					anim = t.anim,
 				})
 			}
 			col += 1
@@ -445,6 +466,16 @@ renderRects :: proc(bricks: [dynamic]Brick, shake: bool) {
 		if brick.hp <= 0 do continue
 		x := brick.x + ox
 		y := brick.y + oy
+		if brick.anim {
+			if tex, src, ok := hyper_rect_frame(); ok {
+				dst := rl.Rectangle{f32(x), f32(y), f32(RECT_W), f32(RECT_H)}
+				rl.DrawTexturePro(tex, src, dst, {}, 0, rl.WHITE)
+				if crack, crack_ok := crack_for_brick(brick); crack_ok {
+					draw_brick_texture(crack, x, y)
+				}
+				continue
+			}
+		}
 		if brick.texture.id != 0 {
 			draw_brick_texture(brick.texture, x, y)
 			if crack, ok := crack_for_brick(brick); ok {
@@ -476,7 +507,8 @@ renderRects :: proc(bricks: [dynamic]Brick, shake: bool) {
 	}
 }
 
-// Bounce the ball off the nearest brick it overlaps, then spend one hit point.
+// Bounce the ball off the nearest brick it overlaps, then spend the ball's damage.
+// That is one hit point until a double super powerup raises it.
 // Side comes from the shortest way out of the brick so a top hit flips vertical speed.
 // hp_before is the brick's hit points before this hit. broke is true when it reaches 0.
 collideRects :: proc(bricks: ^[dynamic]Brick, ball: ^Ball) -> (hit: bool, broke: bool, hp_before: i32, brick_index: int) {
@@ -571,6 +603,11 @@ collideRects :: proc(bricks: ^[dynamic]Brick, ball: ^Ball) -> (hit: bool, broke:
 	}
 	note_ball_velocity(ball)
 
-	if brick.hp > 0 do brick.hp -= 1
+	if brick.hp > 0 {
+		spent := super_hit_damage()
+		if spent < 1 do spent = 1
+		if spent > brick.hp do spent = brick.hp
+		brick.hp -= spent
+	}
 	return true, brick.hp <= 0, hp_before, brick_index
 }

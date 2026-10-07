@@ -20,3 +20,7 @@ life PAD
 fast BALL
 # makes ball increase speed each bounce. Effects all live balls.
 # A ball still in play keeps its speed when another is lost. Ends when no ball is left.
+
+
+bonus BALL
+# applies `score * score` to the level score.

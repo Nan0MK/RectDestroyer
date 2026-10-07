@@ -8,7 +8,7 @@ import rl "vendor:raylib"
 test_powerup_and_rect_config :: proc(t: ^testing.T) {
 	powerups := load_powerup_types(POWERUP_TYPES_PATH)
 	defer delete(powerups)
-	testing.expect_value(t, len(powerups), 6)
+	testing.expect_value(t, len(powerups), 7)
 
 	wide, wide_ok := find_powerup_type(powerups[:], .WIDE)
 	multiply, multiply_ok := find_powerup_type(powerups[:], .MULTIPLY)
@@ -16,20 +16,22 @@ test_powerup_and_rect_config :: proc(t: ^testing.T) {
 	stick, stick_ok := find_powerup_type(powerups[:], .STICK)
 	life, life_ok := find_powerup_type(powerups[:], .LIFE)
 	fast, fast_ok := find_powerup_type(powerups[:], .FAST)
+	bonus, bonus_ok := find_powerup_type(powerups[:], .BONUS)
 	testing.expect(t, wide_ok && wide.target == .PAD)
 	testing.expect(t, multiply_ok && multiply.target == .BALL)
 	testing.expect(t, bomb_ok && bomb.target == .RECT)
 	testing.expect(t, stick_ok && stick.target == .PAD)
 	testing.expect(t, life_ok && life.target == .PAD)
 	testing.expect(t, fast_ok && fast.target == .BALL)
+	testing.expect(t, bonus_ok && bonus.target == .BALL)
 
 	types := load_rect_types(RECT_TYPES_PATH, powerups[:])
 	defer delete(types)
-	testing.expect_value(t, len(types), 9)
+	testing.expect_value(t, len(types), 10)
 
 	expect_rect(t, types[:], 'B', 1, rl.ORANGE, {})
 	expect_rect(t, types[:], 'W', 1, rl.GREEN, {{kind = .WIDE, target = .PAD, chance = 100}})
-	expect_rect(t, types[:], 'O', 1, rl.PURPLE, {{kind = .BOMB, target = .RECT, chance = 100}})
+	expect_rect(t, types[:], 'O', 1, rl.PURPLE, {{kind = .BOMB, target = .RECT, chance = 100}, {kind = .BONUS, target = .BALL, chance = 10}})
 	expect_rect(t, types[:], 'I', 1, rl.BROWN, {{kind = .STICK, target = .PAD, chance = 100}})
 	expect_rect(t, types[:], 'L', 1, rl.BLUE, {{kind = .LIFE, target = .PAD, chance = 100}})
 	expect_rect(t, types[:], 'M', 1, rl.PINK, {{kind = .MULTIPLY, target = .BALL, chance = 100}})
@@ -42,6 +44,7 @@ test_powerup_and_rect_config :: proc(t: ^testing.T) {
 		{kind = .MULTIPLY, target = .BALL, chance = 30},
 	})
 	expect_rect(t, types[:], 'U', 10, rl.BLACK, {})
+	expect_rect(t, types[:], 'X', 10000, rl.WHITE, {{kind = .BONUS, target = .BALL, chance = 100}})
 }
 
 @(test)
@@ -148,11 +151,11 @@ test_graze_spends_one_hit_point :: proc(t: ^testing.T) {
 @(test)
 test_fast_stick_and_life :: proc(t: ^testing.T) {
 	mods: Power_Mods
-	apply_powerup(.LIFE, &mods)
-	apply_powerup(.LIFE, &mods)
-	apply_powerup(.STICK, &mods)
-	apply_powerup(.FAST, &mods)
-	apply_powerup(.WIDE, &mods)
+	apply_powerup(.LIFE, &mods, nil)
+	apply_powerup(.LIFE, &mods, nil)
+	apply_powerup(.STICK, &mods, nil)
+	apply_powerup(.FAST, &mods, nil)
+	apply_powerup(.WIDE, &mods, nil)
 	testing.expect_value(t, mods.lives, i32(2))
 	testing.expect(t, mods.stick)
 	testing.expect(t, mods.fast)
@@ -212,14 +215,14 @@ test_fast_stick_and_life :: proc(t: ^testing.T) {
 	falling := make([dynamic]Falling_Powerup)
 	defer delete(falling)
 	before := mods.pad_w
-	grant_brick_drops(brick, &falling, &mods)
+	grant_brick_drops(brick, &falling, &mods, nil)
 	testing.expect_value(t, len(falling), 1)
 	testing.expect(t, falling[0].kind == .WIDE)
 	testing.expect_value(t, mods.pad_w, before)
 
 	bomb_only := Brick{drop_count = 1}
 	bomb_only.drops[0] = {kind = .BOMB, target = .RECT, chance = 100}
-	grant_brick_drops(bomb_only, &falling, &mods)
+	grant_brick_drops(bomb_only, &falling, &mods, nil)
 	testing.expect_value(t, len(falling), 1)
 }
 
@@ -427,8 +430,8 @@ expect_label :: proc(t: ^testing.T, score: ^big.Int, want: string) {
 test_round_powerup_and_ball_tallies :: proc(t: ^testing.T) {
 	round_powerups = 0
 	mods: Power_Mods
-	apply_powerup(.WIDE, &mods)
-	apply_powerup(.LIFE, &mods)
+	apply_powerup(.WIDE, &mods, nil)
+	apply_powerup(.LIFE, &mods, nil)
 	testing.expect_value(t, round_powerups, i64(0))
 
 	falling := make([dynamic]Falling_Powerup)
@@ -436,24 +439,24 @@ test_round_powerup_and_ball_tallies :: proc(t: ^testing.T) {
 	ball_drop := Brick{drop_count = 2}
 	ball_drop.drops[0] = {kind = .FAST, target = .BALL, chance = 100}
 	ball_drop.drops[1] = {kind = .LIFE, target = .BALL, chance = 100}
-	grant_brick_drops(ball_drop, &falling, &mods)
+	grant_brick_drops(ball_drop, &falling, &mods, nil)
 	testing.expect_value(t, round_powerups, i64(2))
 
 	pad_drop := Brick{drop_count = 1}
 	pad_drop.drops[0] = {kind = .WIDE, target = .PAD, chance = 100}
-	grant_brick_drops(pad_drop, &falling, &mods)
+	grant_brick_drops(pad_drop, &falling, &mods, nil)
 	testing.expect_value(t, round_powerups, i64(2))
 	testing.expect_value(t, len(falling), 1)
 
 	bomb_drop := Brick{drop_count = 1}
 	bomb_drop.drops[0] = {kind = .BOMB, target = .RECT, chance = 100}
-	grant_brick_drops(bomb_drop, &falling, &mods)
+	grant_brick_drops(bomb_drop, &falling, &mods, nil)
 	testing.expect_value(t, round_powerups, i64(2))
 
 	mods.pad_w = 80
 	falling[0].x = 16
 	falling[0].y = 16
-	update_falling_powerups(&falling, 0, 0, 20, &mods, 0)
+	update_falling_powerups(&falling, 0, 0, 20, &mods, 0, nil)
 	testing.expect_value(t, round_powerups, i64(3))
 	testing.expect_value(t, len(falling), 0)
 
@@ -483,6 +486,284 @@ test_brick_sound_variant :: proc(t: ^testing.T) {
 	testing.expect_value(t, brick_sound_variant("super_rect"), i32(1))
 	testing.expect_value(t, brick_sound_variant("tough"), i32(0))
 	testing.expect_value(t, brick_sound_variant(""), i32(0))
+}
+
+@(test)
+test_super_powerups :: proc(t: ^testing.T) {
+	saved := run_super_count
+	defer {
+		run_super_count = saved
+		brick_shake_left = 0
+	}
+	clear_super_powerups()
+	ensure_super_powerups()
+	testing.expect_value(t, len(super_bands), 3)
+
+	double_band: Super_Band
+	explode_band: Super_Band
+	targeting_band: Super_Band
+	for band in super_bands {
+		switch band.kind {
+		case .DOUBLE: double_band = band
+		case .EXPLODE: explode_band = band
+		case .TARGETING: targeting_band = band
+		}
+	}
+	testing.expect_value(t, double_band.from_x, i32(1))
+	testing.expect_value(t, double_band.to_x, i32(50))
+	testing.expect_value(t, explode_band.from_x, i32(4))
+	testing.expect_value(t, explode_band.to_x, i32(12))
+	testing.expect_value(t, targeting_band.from_x, i32(5))
+	testing.expect_value(t, targeting_band.to_x, i32(10))
+	testing.expect_value(t, targeting_band.chance, i32(10))
+	testing.expect_value(t, targeting_band.chance_step, i32(5))
+
+	testing.expect_value(t, super_hit_damage(), i32(1))
+	testing.expect_value(t, super_explode_radius(), i32(0))
+	testing.expect(t, !super_targeting_active())
+
+	add_super_powerup()
+	testing.expect_value(t, run_super_count, i32(1))
+	testing.expect_value(t, super_hit_damage(), i32(2))
+	add_super_powerup()
+	testing.expect_value(t, super_hit_damage(), i32(4))
+	run_super_count = 3
+	testing.expect_value(t, super_hit_damage(), i32(8))
+	run_super_count = 4
+	testing.expect_value(t, super_hit_damage(), i32(16))
+	testing.expect_value(t, super_explode_radius(), i32(1))
+	testing.expect(t, !super_targeting_active())
+	run_super_count = 5
+	testing.expect(t, super_targeting_active())
+	testing.expect_value(t, super_targeting_chance(), i32(10))
+	testing.expect_value(t, super_explode_radius(), i32(2))
+	testing.expect_value(t, super_hit_damage(), i32(32))
+	run_super_count = 7
+	testing.expect_value(t, super_explode_radius(), i32(4))
+	testing.expect_value(t, super_targeting_chance(), i32(10))
+	run_super_count = 10
+	testing.expect_value(t, super_targeting_chance(), i32(10))
+	testing.expect_value(t, super_explode_radius(), i32(7))
+	run_super_count = 11
+	testing.expect_value(t, super_targeting_chance(), i32(15))
+	testing.expect_value(t, super_explode_radius(), i32(8))
+	run_super_count = 12
+	testing.expect_value(t, super_explode_radius(), i32(9))
+	testing.expect_value(t, super_targeting_chance(), i32(20))
+	run_super_count = 13
+	testing.expect_value(t, super_explode_radius(), i32(9))
+	testing.expect_value(t, super_targeting_chance(), i32(25))
+	run_super_count = 28
+	testing.expect_value(t, super_targeting_chance(), i32(100))
+	saturated := i32(1) << 30
+	run_super_count = 30
+	testing.expect_value(t, super_hit_damage(), saturated)
+	run_super_count = 50
+	testing.expect_value(t, super_hit_damage(), saturated)
+	testing.expect_value(t, super_explode_radius(), i32(9))
+	testing.expect_value(t, super_targeting_chance(), i32(100))
+	run_super_count = 51
+	testing.expect_value(t, super_hit_damage(), saturated)
+	clear_super_powerups()
+	testing.expect_value(t, run_super_count, i32(0))
+	testing.expect_value(t, super_hit_damage(), i32(1))
+
+	step := RECT_W + RECT_GAP
+	rise := RECT_H + RECT_GAP
+	origin := Brick{x = 0, y = 0, hp = 10}
+	right := Brick{x = step, y = 0, hp = 5}
+	far := Brick{x = step * 2, y = 0, hp = 5}
+	diag := Brick{x = step, y = rise, hp = 5}
+	testing.expect_value(t, brick_step_dist(origin, right), i32(1))
+	testing.expect_value(t, brick_step_dist(origin, far), i32(2))
+	testing.expect_value(t, brick_step_dist(origin, diag), i32(2))
+	testing.expect_value(t, brick_step_dist(origin, origin), i32(0))
+
+	bricks := make([dynamic]Brick)
+	defer delete(bricks)
+	append(&bricks, Brick{x = 0, y = 0, hp = 10, max_hp = 10})
+	append(&bricks, Brick{x = step, y = 0, hp = 5, max_hp = 5})
+	append(&bricks, Brick{x = step * 2, y = 0, hp = 5, max_hp = 5})
+	append(&bricks, Brick{x = step, y = rise, hp = 5, max_hp = 5})
+	falling := make([dynamic]Falling_Powerup)
+	defer delete(falling)
+	mods: Power_Mods
+	run_super_count = 4
+	super_blast(&bricks, 0, &falling, &mods, nil, 1)
+	testing.expect_value(t, bricks[0].hp, i32(10))
+	testing.expect_value(t, bricks[1].hp, i32(4))
+	testing.expect_value(t, bricks[2].hp, i32(5))
+	testing.expect_value(t, bricks[3].hp, i32(5))
+	run_super_count = 5
+	super_blast(&bricks, 0, &falling, &mods, nil, 1)
+	testing.expect_value(t, bricks[0].hp, i32(10))
+	testing.expect_value(t, bricks[1].hp, i32(3))
+	testing.expect_value(t, bricks[2].hp, i32(4))
+	testing.expect_value(t, bricks[3].hp, i32(4))
+
+	run_super_count = 1
+	one := make([dynamic]Brick)
+	defer delete(one)
+	append(&one, Brick{x = 0, y = 0, hp = 10, max_hp = 10})
+	ball := Ball{x = RECT_W / 2, y = RECT_H / 2, vx = 1, vy = -1, alive = true}
+	_, broke, before, _ := collideRects(&one, &ball)
+	testing.expect(t, !broke)
+	testing.expect_value(t, before, i32(10))
+	testing.expect_value(t, one[0].hp, i32(8))
+
+	clear_super_powerups()
+	grant_debug_super(.DOUBLE)
+	testing.expect_value(t, run_super_count, i32(1))
+	testing.expect_value(t, super_hit_damage(), i32(2))
+	grant_debug_super(.DOUBLE)
+	grant_debug_super(.DOUBLE)
+	grant_debug_super(.DOUBLE)
+	testing.expect_value(t, run_super_count, i32(4))
+	testing.expect_value(t, super_hit_damage(), i32(16))
+
+	clear_super_powerups()
+	grant_debug_super(.EXPLODE)
+	testing.expect_value(t, run_super_count, i32(4))
+	testing.expect_value(t, super_hit_damage(), i32(16))
+	testing.expect_value(t, super_explode_radius(), i32(1))
+	testing.expect(t, !super_targeting_active())
+	grant_debug_super(.EXPLODE)
+	testing.expect_value(t, run_super_count, i32(5))
+	testing.expect_value(t, super_explode_radius(), i32(2))
+	testing.expect(t, super_targeting_active())
+	testing.expect_value(t, super_targeting_chance(), i32(10))
+
+	clear_super_powerups()
+	grant_debug_super(.TARGETING)
+	testing.expect_value(t, run_super_count, i32(5))
+	testing.expect(t, super_targeting_active())
+	testing.expect_value(t, super_targeting_chance(), i32(10))
+	testing.expect_value(t, super_explode_radius(), i32(2))
+	testing.expect_value(t, super_hit_damage(), i32(32))
+	grant_debug_super(.TARGETING)
+	testing.expect_value(t, run_super_count, i32(6))
+	testing.expect_value(t, super_targeting_chance(), i32(10))
+	run_super_count = 10
+	grant_debug_super(.TARGETING)
+	testing.expect_value(t, run_super_count, i32(11))
+	testing.expect_value(t, super_targeting_chance(), i32(15))
+	run_super_count = 28
+	grant_debug_super(.TARGETING)
+	testing.expect_value(t, run_super_count, i32(28))
+	testing.expect_value(t, super_targeting_chance(), i32(100))
+}
+
+// A targeting success aims along the straight line to the brick and keeps speed.
+// A ball still touching the pad does not aim back into it. A shallow angle still advances,
+// because the fractional carry is kept.
+@(test)
+test_targeting_bounce_keeps_leaving :: proc(t: ^testing.T) {
+	pad_left: i32 = 300
+	pad_w: i32 = 200
+	// The pad center sits back inside the surface the ball is touching.
+	pad_x := pad_left + pad_w / 2
+	pad_y := PAD_TOP
+
+	centered := Ball {
+		x = pad_x,
+		y = PAD_TOP - BALL_R,
+		vx = 0,
+		vy = -1,
+		alive = true,
+	}
+	aim_ball_at_point(&centered, pad_x, pad_y, 0, -1, pad_left, pad_w)
+	testing.expect(t, centered.vy <= -1 + 0.01)
+	testing.expect(t, abs(centered.vx) < 0.01)
+
+	// Beside the pad, the line to the pad center is the heading, including a downward component.
+	off := Ball{x = 40, y = PAD_TOP - BALL_R, vx = 0.2, vy = -1, alive = true}
+	aim_ball_at_point(&off, pad_x, pad_y, 0.2, -1, pad_left, pad_w)
+	testing.expect(t, off.vx > 0.9)
+	testing.expect(t, off.vy > 0 && off.vy < 0.1)
+
+	ceiling := Ball{x = 40, y = -1, vx = 0, vy = 1, alive = true}
+	aim_ball_at_point(&ceiling, pad_x, pad_y, 0, 1, pad_left, pad_w)
+	testing.expect(t, ceiling.vx > 0.4)
+	testing.expect(t, ceiling.vy > 0.7 && ceiling.vy < 1)
+
+	left := Ball{x = -1, y = 80, vx = 1, vy = -0.25, alive = true}
+	aim_ball_at_point(&left, pad_x, pad_y, 1, -0.25, pad_left, pad_w)
+	testing.expect(t, left.vx > 0.5)
+	testing.expect(t, left.vy > 0.6)
+
+	right := Ball{x = SCREEN_RIGHT + 1, y = 80, vx = -1, vy = 0.4, alive = true}
+	aim_ball_at_point(&right, pad_x, pad_y, -1, 0.4, pad_left, pad_w)
+	testing.expect(t, right.vx < -0.5)
+	testing.expect(t, right.vy > 0.6)
+
+	diag := Ball{x = 40, y = 80, vx = 0.6, vy = -0.8, alive = true}
+	aim_ball_at_point(&diag, pad_x, pad_y, 0.6, -0.8, pad_left, pad_w)
+	speed_sq := diag.vx * diag.vx + diag.vy * diag.vy
+	testing.expect(t, speed_sq > 0.96 && speed_sq < 1.04)
+	testing.expect(t, diag.vx > 0.5)
+	testing.expect(t, diag.vy > 0.7)
+
+	// Open space turns onto the line, even when that reverses the old velocity.
+	free := Ball{x = 100, y = 100, vx = 1, vy = 0, alive = true}
+	aim_ball_at_point(&free, 100, 40, 1, 0, pad_left, pad_w)
+	testing.expect(t, free.vy < -0.9)
+	testing.expect(t, abs(free.vx) < 0.1)
+
+	across := Ball{x = 200, y = 200, vx = 1, vy = 0, alive = true}
+	aim_ball_at_point(&across, 80, 80, 1, 0, pad_left, pad_w)
+	testing.expect(t, across.vx < -0.6)
+	testing.expect(t, across.vy < -0.6)
+
+	// Still touching: steering may not slow the leaving axis.
+	on_ceiling := Ball{x = 10, y = -1, vx = 0, vy = 1}
+	_, held_vy := hold_targeting_departure(on_ceiling, 0.2, 0.2, pad_left, pad_w)
+	testing.expect(t, held_vy >= 1 - 0.001)
+
+	on_pad := Ball{x = 400, y = PAD_TOP - BALL_R, vx = 0, vy = -1}
+	_, held_up := hold_targeting_departure(on_pad, 0, 1, pad_left, pad_w)
+	testing.expect(t, held_up <= -1 + 0.001)
+
+	on_left := Ball{x = -1, y = 80, vx = 1, vy = 0}
+	held_right, _ := hold_targeting_departure(on_left, -0.5, 0.5, pad_left, pad_w)
+	testing.expect(t, held_right >= 1 - 0.001)
+
+	open := Ball{x = 400, y = 200, vx = 0, vy = -1}
+	_, turned := hold_targeting_departure(open, 0.2, 0.4, pad_left, pad_w)
+	testing.expect(t, turned == 0.4)
+
+	// Two frames of a sub-pixel axis move one pixel when nothing clears the carry.
+	shallow := Ball{vx = 0.6, vy = -0.6}
+	mx0, my0 := consume_ball_motion(&shallow)
+	mx1, my1 := consume_ball_motion(&shallow)
+	testing.expect_value(t, mx0, i32(0))
+	testing.expect_value(t, my0, i32(0))
+	testing.expect_value(t, mx1, i32(1))
+	testing.expect_value(t, my1, i32(-1))
+}
+
+@(test)
+test_total_stamp_label :: proc(t: ^testing.T) {
+	buf: [32]byte
+	text, ok := total_date_label("2026-10-07 00:05:09", &buf)
+	testing.expect(t, ok)
+	testing.expect_value(t, string(text), "10/07/2026 12:05:09 AM")
+	text, ok = total_date_label("2026-10-07 12:00:00", &buf)
+	testing.expect(t, ok)
+	testing.expect_value(t, string(text), "10/07/2026 12:00:00 PM")
+	text, ok = total_date_label("2026-10-07 15:04:05", &buf)
+	testing.expect(t, ok)
+	testing.expect_value(t, string(text), "10/07/2026 3:04:05 PM")
+	text, ok = total_date_label("2026-01-02 01:02:03", &buf)
+	testing.expect(t, ok)
+	testing.expect_value(t, string(text), "01/02/2026 1:02:03 AM")
+	text, ok = total_date_label("2026-10-07 23:59:59", &buf)
+	testing.expect(t, ok)
+	testing.expect_value(t, string(text), "10/07/2026 11:59:59 PM")
+	text, ok = total_date_label("2026-10-07", &buf)
+	testing.expect(t, ok)
+	testing.expect_value(t, string(text), "10/07/2026")
+	_, ok = total_date_label("", &buf)
+	testing.expect(t, !ok)
 }
 
 expect_rect :: proc(t: ^testing.T, types: []Rect_Type, symbol: rune, hp: i32, color: rl.Color, drops: []Brick_Drop) {

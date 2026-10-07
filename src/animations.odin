@@ -2,6 +2,8 @@ package src
 
 import "core:fmt"
 import "core:math"
+import "core:os"
+import "core:strings"
 import rl "vendor:raylib"
 
 // Sheets in src/textures/animations. Magenta (255, 0, 255) is the grid.
@@ -12,7 +14,6 @@ ANIM_FRAME_DT :: 1.0 / 12.0
 TRAIL_MIN_SPEED :: f32(1.5)
 // The sheet is short. Drawn at its own width it is a thin sliver, so the frame is stretched this many times wider.
 TRAIL_STRETCH :: i32(3)
-EXPLODE_SCALE :: i32(2)
 BALL_LOST_SCALE :: i32(3)
 ANIM_PLAY_MAX :: 128
 
@@ -21,6 +22,7 @@ Anim_Kind :: enum {
 	BALL_TRAIL,
 	EXPLODE,
 	LIFE_LOST,
+	HYPER_RECT,
 }
 
 Anim_Clip :: struct {
@@ -30,18 +32,25 @@ Anim_Clip :: struct {
 
 // One playing sheet. x, y is the anchor for that kind: the ball's x for ball_lost,
 // the life icon's top-left for life_lost, and the brick's top-left for explode.
+// size is the explode square, fixed when the blast starts.
 // finale is the last life: drawn huge at the center while the board stays frozen.
+// layered is a super explode: drawn behind the bricks, and again at half alpha in front of them.
 Anim_Play :: struct {
-	kind:   Anim_Kind,
-	x, y:   i32,
-	age:    f32,
-	finale: bool,
+	kind:    Anim_Kind,
+	x, y:    i32,
+	size:    i32,
+	age:     f32,
+	finale:  bool,
+	layered: bool,
 }
 
 clips: [Anim_Kind]Anim_Clip
 anims_loaded: bool
 plays: [dynamic]Anim_Play
 trail_age: f32
+hyper_age: f32
+// Looping frames of ball_sp_0, ball_sp_1, and ball_sp_2. Held while the board is frozen.
+ball_sp_age: f32
 
 // Rows that are mostly the grid start a frame. The returned list plays bottom to top.
 anim_frame_rects :: proc(colors: []rl.Color, width, height: int) -> [dynamic]rl.Rectangle {
@@ -86,6 +95,57 @@ anim_frame_rects :: proc(colors: []rl.Color, width, height: int) -> [dynamic]rl.
 	return frames
 }
 
+// A sheet whose PNG has no magenta grid declares its cell size in the sibling `.animation` text as `WxH`.
+frame_size_from_details :: proc(png_path: string) -> (w, h: int, ok: bool) {
+	if len(png_path) < 5 || png_path[len(png_path) - 4:] != ".png" do return
+	details := strings.concatenate({png_path[:len(png_path) - 4], ".animation"})
+	defer delete(details)
+	data, ok_read := os.read_entire_file(details)
+	if !ok_read do return
+	defer delete(data)
+
+	text := string(data)
+	for i := 0; i < len(text); {
+		for i < len(text) && (text[i] == ' ' || text[i] == '\t' || text[i] == '\r' || text[i] == '\n' || text[i] == '.') {
+			i += 1
+		}
+		j := i
+		for j < len(text) && text[j] != ' ' && text[j] != '\t' && text[j] != '\r' && text[j] != '\n' && text[j] != '.' {
+			j += 1
+		}
+		tok := text[i:j]
+		i = j
+		if len(tok) == 0 {
+			i += 1
+			continue
+		}
+		xpos := -1
+		for ci := 0; ci < len(tok); ci += 1 {
+			if tok[ci] == 'x' {
+				xpos = ci
+				break
+			}
+		}
+		if xpos <= 0 || xpos >= len(tok) - 1 do continue
+		wv, wok := parse_positive_int(tok[:xpos])
+		hv, hok := parse_positive_int(tok[xpos + 1:])
+		if wok && hok {
+			return wv, hv, true
+		}
+	}
+	return
+}
+
+parse_positive_int :: proc(s: string) -> (int, bool) {
+	if len(s) == 0 do return 0, false
+	v := 0
+	for ch in s {
+		if ch < '0' || ch > '9' do return 0, false
+		v = v * 10 + int(ch - '0')
+	}
+	return v, v > 0
+}
+
 load_anim_clip :: proc(path: cstring) -> Anim_Clip {
 	img := rl.LoadImage(path)
 	if img.data == nil {
@@ -110,6 +170,23 @@ load_anim_clip :: proc(path: cstring) -> Anim_Clip {
 	}
 
 	frames := anim_frame_rects(colors_ptr[:width * height], width, height)
+	// Grid-less sheets either play whole, or follow their declared frame size from the .animation text.
+	anim_found := false
+	for f in frames {
+		if f.height < f32(height) {
+			anim_found = true
+			break
+		}
+	}
+	if !anim_found {
+		if fw, fh, ok := frame_size_from_details(string(path)); ok && fw == width && fh > 0 && height % fh == 0 {
+			delete(frames)
+			frames = make([dynamic]rl.Rectangle)
+			for i in 0 ..< height / fh {
+				append(&frames, rl.Rectangle{0, f32(height - (i + 1) * fh), f32(fw), f32(fh)})
+			}
+		}
+	}
 	rl.ImageColorReplace(&img, ANIM_GRID, rl.BLANK)
 	tex := rl.LoadTextureFromImage(img)
 	rl.UnloadImage(img)
@@ -129,6 +206,7 @@ ensure_animations :: proc() {
 	clips[.BALL_TRAIL] = load_anim_clip("src/textures/animations/ball_trail.png")
 	clips[.EXPLODE] = load_anim_clip("src/textures/animations/explode.png")
 	clips[.LIFE_LOST] = load_anim_clip("src/textures/animations/life_lost.png")
+	clips[.HYPER_RECT] = load_anim_clip("src/textures/animations/hyper_rect.png")
 }
 
 unload_animations :: proc() {
@@ -143,11 +221,15 @@ unload_animations :: proc() {
 	delete(plays)
 	plays = {}
 	trail_age = 0
+	hyper_age = 0
+	ball_sp_age = 0
 }
 
 clear_animations :: proc() {
 	clear(&plays)
 	trail_age = 0
+	hyper_age = 0
+	ball_sp_age = 0
 }
 
 push_play :: proc(play: Anim_Play) {
@@ -214,8 +296,29 @@ render_life_finale :: proc() {
 	}
 }
 
-play_explosion :: proc(brick_x, brick_y: i32) {
-	push_play({kind = .EXPLODE, x = brick_x, y = brick_y})
+// A square a little larger than the brick. Super explode grows past this.
+explode_base :: proc() -> i32 {
+	return RECT_W + 16
+}
+
+// radius 0 is a bomb. A super explode passes super_explode_radius so the sheet matches that blast.
+explode_span :: proc(radius: i32) -> i32 {
+	span := explode_base()
+	if radius > 0 {
+		reach := RECT_W + radius * 2 * (RECT_W + RECT_GAP)
+		if reach > span do span = reach
+	}
+	return span
+}
+
+play_explosion :: proc(brick_x, brick_y, radius: i32) {
+	push_play({
+		kind = .EXPLODE,
+		x = brick_x,
+		y = brick_y,
+		size = explode_span(radius),
+		layered = radius > 0,
+	})
 }
 
 // Faint just above TRAIL_MIN_SPEED, then rising quickly, and fully opaque at MAX_BALL_SPEED.
@@ -261,8 +364,12 @@ update_animations :: proc(dt: f32, advance_trail: bool) {
 	ensure_animations()
 	step := dt
 	if step < 0 do step = 0
-	if advance_trail do trail_age += step
+	if advance_trail {
+		trail_age += step
+		ball_sp_age += step
+	}
 	if step == 0 do return
+	hyper_age += step
 	for i := len(plays) - 1; i >= 0; i -= 1 {
 		plays[i].age += step
 		count := len(clips[plays[i].kind].frames)
@@ -296,6 +403,24 @@ render_ball_trail :: proc(ball: Ball) {
 	rl.DrawTexturePro(clip.tex, src, dst, origin, trail_angle(ball.vx, ball.vy), {255, 255, 255, alpha})
 }
 
+// Super explode only. The opaque pass sits behind the bricks. The half-alpha pass sits in front of them.
+render_layered_explosions :: proc(alpha: u8) {
+	if alpha == 0 do return
+	ensure_animations()
+	clip := clips[.EXPLODE]
+	count := len(clip.frames)
+	if clip.tex.id == 0 || count < 1 do return
+	for play in plays {
+		if play.kind != .EXPLODE || !play.layered do continue
+		src := clip.frames[anim_frame_index(play.age, count, false)]
+		side := play.size
+		if side < 1 do side = explode_base()
+		cx := play.x + RECT_W / 2
+		cy := play.y + RECT_H / 2
+		draw_anim(clip.tex, src, cx - side / 2, cy - side / 2, side, side, alpha)
+	}
+}
+
 render_animations :: proc() {
 	ensure_animations()
 	for play in plays {
@@ -315,14 +440,46 @@ render_animations :: proc() {
 			if play.finale do continue
 			draw_anim(clip.tex, src, play.x, play.y, LIFE_POINT_SIZE, LIFE_POINT_SIZE, 255)
 		case .EXPLODE:
-			// 2× scale, then the width is stretched to the brick the blast plays on.
-			h := i32(src.height) * EXPLODE_SCALE
-			w := i32(src.width) * EXPLODE_SCALE
-			if w < RECT_W do w = RECT_W
+			if play.layered do continue
+			side := play.size
+			if side < 1 do side = explode_base()
 			cx := play.x + RECT_W / 2
 			cy := play.y + RECT_H / 2
-			draw_anim(clip.tex, src, cx - w / 2, cy - h / 2, w, h, 255)
+			draw_anim(clip.tex, src, cx - side / 2, cy - side / 2, side, side, 255)
 		case .BALL_TRAIL:
+		case .HYPER_RECT:
 		}
 	}
+}
+
+// The looping frame of the hyper_rect sheet. Bricks of that type use it as their picture.
+hyper_rect_frame :: proc() -> (tex: rl.Texture2D, src: rl.Rectangle, ok: bool) {
+	ensure_animations()
+	clip := clips[.HYPER_RECT]
+	count := len(clip.frames)
+	if clip.tex.id == 0 || count < 1 do return
+	return clip.tex, clip.frames[anim_frame_index(hyper_age, count, true)], true
+}
+
+// True when this rect name declares an animated picture in src/textures/animations.
+rect_anim_available :: proc(name: string) -> bool {
+	if len(name) == 0 do return false
+	buf: [256]byte
+	n := 0
+	dir := "src/textures/animations/"
+	for ch in dir {
+		buf[n] = u8(ch)
+		n += 1
+	}
+	for ch in name {
+		if n >= len(buf) - 10 do return false
+		buf[n] = u8(ch)
+		n += 1
+	}
+	suffix := ".animation"
+	for ch in suffix {
+		buf[n] = u8(ch)
+		n += 1
+	}
+	return os.exists(string(buf[:n]))
 }

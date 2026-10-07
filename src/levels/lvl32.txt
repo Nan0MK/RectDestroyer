@@ -1,0 +1,13 @@
+  U U     U U
+  UU UUUUU UU
+ S US     SU S
+ S USSSSSSSU S
+ S UUUUUUUUU S
+ S M       U S
+ S UUXUUUXUU S
+ S U X   X U S
+LU UUUUUUUUU U
+  FU       UW
+    SUSSSUS U
+   SU USU US
+     S U S

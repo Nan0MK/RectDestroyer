@@ -74,6 +74,7 @@ unload_starfield :: proc() {
 	star_a_tex = {}
 	star_b_tex = {}
 	starfield_ready = false
+	unload_max_score_field()
 }
 
 // 0 at the far spawn, 255 once the sheet is still far but clear of the fog.
@@ -199,4 +200,89 @@ draw_starfield :: proc() {
 star_draw_z :: proc(id: int) -> f32 {
 	if id < STAR_A_COUNT do return star_a[id].z
 	return star_b[id - STAR_A_COUNT].z
+}
+
+// On top of the space cube once this run has reached MAX SCORE. It stays through later levels, like the super powerups. Five sheets, faster than the menu starfield.
+MAX_FIELD_COUNT :: 5
+MAX_FIELD_FAR :: f32(50)
+MAX_FIELD_SPEED :: f32(16)
+MAX_FIELD_CLEAR :: f32(38)
+
+max_field_tex: rl.Texture2D
+max_field: [MAX_FIELD_COUNT]Star_Sheet
+max_field_ready: bool
+
+ensure_max_score_field :: proc() {
+	if max_field_ready || !rl.IsWindowReady() do return
+	max_field_ready = true
+	max_field_tex = load_star_texture("src/textures/max_score_effect_field.png")
+	start_near: f32 = 18
+	span := MAX_FIELD_FAR - start_near
+	for i in 0 ..< MAX_FIELD_COUNT {
+		place_star(&max_field[i], start_near + (f32(i) + 0.5) * span / f32(MAX_FIELD_COUNT))
+	}
+}
+
+unload_max_score_field :: proc() {
+	if max_field_tex.id != 0 do rl.UnloadTexture(max_field_tex)
+	max_field_tex = {}
+	max_field_ready = false
+}
+
+advance_max_field :: proc(sheet: ^Star_Sheet, dt: f32) {
+	sheet.z -= MAX_FIELD_SPEED * dt
+	for sheet.z <= STAR_BEHIND {
+		sheet.z += MAX_FIELD_FAR - STAR_BEHIND
+		place_star(sheet, sheet.z)
+	}
+}
+
+// Same approach as the menu starfield: sheets fly at the camera and loop back to the far start.
+// Drawn after the cube, with depth off, so the cube stays and these sit on top of it.
+draw_max_score_field :: proc() {
+	ensure_max_score_field()
+	dt := rl.GetFrameTime()
+	if dt < 0 do dt = 0
+	if dt > 0.05 do dt = 0.05
+	if dt > 0 {
+		for &sheet in max_field {
+			advance_max_field(&sheet, dt)
+		}
+	}
+
+	cam := rl.Camera3D{
+		position   = {0, 0, 0},
+		target     = {0, 0, 1},
+		up         = {0, 1, 0},
+		fovy       = 70,
+		projection = .PERSPECTIVE,
+	}
+
+	rl.BeginMode3D(cam)
+	rlgl.DisableDepthTest()
+	rlgl.DisableDepthMask()
+	rlgl.DisableBackfaceCulling()
+
+	order: [MAX_FIELD_COUNT]int
+	for i in 0 ..< MAX_FIELD_COUNT {
+		order[i] = i
+	}
+	for i in 1 ..< MAX_FIELD_COUNT {
+		key := order[i]
+		j := i
+		for j > 0 && max_field[order[j - 1]].z < max_field[key].z {
+			order[j] = order[j - 1]
+			j -= 1
+		}
+		order[j] = key
+	}
+	for i in 0 ..< MAX_FIELD_COUNT {
+		sheet := max_field[order[i]]
+		draw_star_sheet(cam, max_field_tex, sheet, star_fog(sheet.z, MAX_FIELD_FAR, MAX_FIELD_CLEAR))
+	}
+
+	rlgl.EnableBackfaceCulling()
+	rlgl.EnableDepthMask()
+	rlgl.EnableDepthTest()
+	rl.EndMode3D()
 }

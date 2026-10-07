@@ -18,6 +18,9 @@ desktop.ini
 # Saved runs. One overall score per line.
 scores.txt
 
+# Compiled export packages
+export/
+
 # Local session resume
 resume.cmd
 resume.ps1

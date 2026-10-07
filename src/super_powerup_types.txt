@@ -1,0 +1,17 @@
+# Super Powerups for super gameplay
+# These Super Powerups only take effect once MAX SCORE is reached.
+# All of these effects stack on one another, they do not replace eachother.
+
+double
+# doubles amount of dammage ball deals upon each MAX SCORE.
+# double effects MAX SCORE from 1x to 50x.
+
+explode
+# explode makes ball cause explosion dammage every time it hits a rect.
+# effect increases explosion size each additional MAX SCORE is achieved.
+# this takes effect on MAX SCORE 4x to 12x.
+
+targeting
+# each ball has 5% chance to tatget bricks, on each bounce.
+# takes effect at MAX SCORE 5 thru 10. Each ball has 10% chance of targeting.
+# effect adds 5% more chance each subsequent MAX SCORE.

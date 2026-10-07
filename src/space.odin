@@ -1,6 +1,7 @@
 package src
 
 import "core:fmt"
+import "core:math"
 import "core:strings"
 import rl "vendor:raylib"
 import "vendor:raylib/rlgl"
@@ -8,6 +9,7 @@ import "vendor:raylib/rlgl"
 // src/textures/space_bg.png on the inside of a cube. The camera stays at the center.
 // The mesh faces outward, so the draw culls front faces and the inside is what shows.
 // The default shader lights those outward faces, which leaves the inside black.
+// Levels numbered above 19 put src/textures/galaxy_bg.png on the +Z face.
 SPACE_CUBE :: f32(10)
 SPACE_FOVY :: f32(70)
 // Radians per second. The three rates stay different so the tumble is not one spin.
@@ -42,6 +44,8 @@ space_model: rl.Model
 space_tex: rl.Texture2D
 space_shader: rl.Shader
 space_ready: bool
+galaxy_model: rl.Model
+galaxy_tex: rl.Texture2D
 
 ensure_space_background :: proc() {
 	if space_ready || !rl.IsWindowReady() do return
@@ -84,9 +88,42 @@ ensure_space_background :: proc() {
 	space_tex = tex
 	space_model.materials[0].shader = space_shader
 	rl.SetMaterialTexture(&space_model.materials[0], .ALBEDO, space_tex)
+
+	galaxy := rl.LoadTexture("src/textures/galaxy_bg.png")
+	if galaxy.id == 0 {
+		fmt.eprintf("Failed to load texture 'src/textures/galaxy_bg.png'\n")
+		return
+	}
+	rl.GenTextureMipmaps(&galaxy)
+	rl.SetTextureFilter(galaxy, .TRILINEAR)
+	rl.SetTextureWrap(galaxy, .CLAMP)
+	galaxy_model = rl.LoadModelFromMesh(rl.GenMeshPlane(SPACE_CUBE, SPACE_CUBE, 1, 1))
+	if galaxy_model.meshCount < 1 || galaxy_model.materialCount < 1 {
+		rl.UnloadTexture(galaxy)
+		if galaxy_model.meshCount > 0 do rl.UnloadModel(galaxy_model)
+		galaxy_model = {}
+		fmt.eprintf("Failed to build the galaxy face\n")
+		return
+	}
+	galaxy_tex = galaxy
+	galaxy_model.materials[0].shader = space_shader
+	rl.SetMaterialTexture(&galaxy_model.materials[0], .ALBEDO, galaxy_tex)
 }
 
 unload_space_background :: proc() {
+	// The galaxy face borrows the space shader. Drop that reference before either model unloads.
+	if galaxy_model.materialCount > 0 {
+		galaxy_model.materials[0].shader = {}
+	}
+	if galaxy_tex.id != 0 {
+		rl.UnloadTexture(galaxy_tex)
+		galaxy_tex = {}
+		if galaxy_model.materialCount > 0 && galaxy_model.materials[0].maps != nil {
+			galaxy_model.materials[0].maps[0].texture = {}
+		}
+	}
+	if galaxy_model.meshCount > 0 do rl.UnloadModel(galaxy_model)
+	galaxy_model = {}
 	if space_shader.id != 0 {
 		rl.UnloadShader(space_shader)
 		space_shader = {}
@@ -101,12 +138,14 @@ unload_space_background :: proc() {
 }
 
 // Wall time, so pause and the menus do not stop the tumble.
-draw_space_background :: proc() {
+// galaxy draws galaxy_bg.png on the inside of the +Z face. The other faces stay space_bg.png.
+draw_space_background :: proc(galaxy: bool) {
 	ensure_space_background()
 	if space_model.meshCount < 1 do return
 
 	t := f32(rl.GetTime())
-	space_model.transform = rl.MatrixRotateXYZ({t * SPACE_SPIN_X, t * SPACE_SPIN_Y, t * SPACE_SPIN_Z})
+	spin := rl.MatrixRotateXYZ({t * SPACE_SPIN_X, t * SPACE_SPIN_Y, t * SPACE_SPIN_Z})
+	space_model.transform = spin
 
 	rlgl.SetCullFace(.FRONT)
 	defer rlgl.SetCullFace(.BACK)
@@ -119,5 +158,12 @@ draw_space_background :: proc() {
 		projection = .PERSPECTIVE,
 	})
 	rl.DrawModel(space_model, {}, 1, rl.WHITE)
+	if galaxy && galaxy_model.meshCount > 0 {
+		// The plane lies on XZ with a +Y normal. A quarter turn about X stands it on the +Z face,
+		// just inside the cube so it covers that wall without fighting the space texture.
+		local := rl.MatrixTranslate(0, 0, SPACE_CUBE * 0.5 - 0.05) * rl.MatrixRotateX(f32(math.PI * 0.5))
+		galaxy_model.transform = spin * local
+		rl.DrawModel(galaxy_model, {}, 1, rl.WHITE)
+	}
 	rl.EndMode3D()
 }

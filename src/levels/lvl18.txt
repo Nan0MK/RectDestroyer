@@ -1,0 +1,12 @@
+BBBBFFFFFFFFFBBBB
+BMBF         FBMB
+BBF           FBB
+BF  OUUUOUUUO  FB
+F   U       U   F
+    U UUUUU U
+    U UUOUU U
+    U UOUOU U
+    U UUOUU U
+    U UUUUU U
+    U       U
+    UUUUUUUUU

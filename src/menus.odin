@@ -28,7 +28,9 @@ button_hovered :: proc(x, y, w, h: i32, mouse: rl.Vector2) -> bool {
 }
 
 button_clicked :: proc(x, y, w, h: i32, mouse: rl.Vector2) -> bool {
-	return rl.IsMouseButtonPressed(rl.MouseButton.LEFT) && button_hovered(x, y, w, h, mouse)
+	clicked := rl.IsMouseButtonPressed(rl.MouseButton.LEFT) && button_hovered(x, y, w, h, mouse)
+	if clicked do play_menu_button_click()
+	return clicked
 }
 
 draw_button :: proc(label: cstring, x, y, w, h: i32, mouse: rl.Vector2) {
@@ -59,7 +61,120 @@ main_button_rect :: proc(index: int) -> (x, y, w, h: i32) {
 	return
 }
 
-// One button per LEVELS entry. Two columns after 5, three after 10, so each one stays on screen.
+level_select_scroll: f32
+
+// Debug mode: type 6767 on the main menu. Shows an indicator everywhere,
+// unlocks the right-click ball reset, and adds a small X to leave debug mode.
+debug_mode: bool
+debug_typed: [4]rune
+debug_typed_len: int
+
+debug_x_rect :: proc() -> (x, y, w, h: i32) {
+	w = px(28)
+	h = px(28)
+	x = SCW - w - px(8)
+	y = SCH - h - px(8)
+	return
+}
+
+update_debug_input :: proc(screen: Screen) {
+	if screen == .MENU && !debug_mode {
+		c := rl.GetCharPressed()
+		for c != 0 {
+			if debug_typed_len < 4 {
+				debug_typed[debug_typed_len] = c
+				debug_typed_len += 1
+			} else {
+				copy(debug_typed[:], debug_typed[1:])
+				debug_typed[3] = c
+			}
+			if debug_typed_len == 4 && debug_typed[0] == '6' && debug_typed[1] == '7' && debug_typed[2] == '6' && debug_typed[3] == '7' {
+				debug_mode = true
+				debug_typed_len = 0
+			}
+			c = rl.GetCharPressed()
+		}
+	}
+}
+
+// One package owns debug state; menus and the frame loop both read it.
+debug_x_clicked :: proc(mouse: rl.Vector2) -> bool {
+	if !debug_mode do return false
+	x, y, w, h := debug_x_rect()
+	return button_clicked(x, y, w, h, mouse)
+}
+
+DEBUG_BUTTON_LABELS : [13]cstring = {
+	"ADD LIFE", "REMOVE LIFE", "WIDE", "MULTIPLY", "STICK", "LIFE", "FAST", "BONUS", "BOMB",
+	"DOUBLE", "EXPLODE", "TARGETING", "CLEAR POWERUPS",
+}
+
+DEBUG_ADD_LIFE :: 0
+DEBUG_REMOVE_LIFE :: 1
+DEBUG_WIDE :: 2
+DEBUG_MULTIPLY :: 3
+DEBUG_STICK :: 4
+DEBUG_LIFE :: 5
+DEBUG_FAST :: 6
+DEBUG_BONUS :: 7
+DEBUG_BOMB :: 8
+DEBUG_DOUBLE :: 9
+DEBUG_EXPLODE :: 10
+DEBUG_TARGETING :: 11
+DEBUG_CLEAR_POWERUPS :: 12
+
+debug_button_rect :: proc(index: int) -> (x, y, w, h: i32) {
+	w = px(170)
+	h = px(24)
+	x = px(8)
+	y = px(40) + i32(index) * (h + px(4))
+	return
+}
+
+debug_button_index :: proc(mouse: rl.Vector2) -> int {
+	for i in 0..<len(DEBUG_BUTTON_LABELS) {
+		x, y, w, h := debug_button_rect(i)
+		if button_clicked(x, y, w, h, mouse) do return i
+	}
+	return -1
+}
+
+draw_debug_overlay :: proc() {
+	if !debug_mode do return
+	draw_text("DEBUG", px(8), px(8), px(20), rl.YELLOW)
+	x, y, w, h := debug_x_rect()
+	rl.DrawRectangle(x, y, w, h, rl.DARKGRAY)
+	rl.DrawRectangleLines(x, y, w, h, rl.YELLOW)
+	xw := measure_text("X", px(20))
+	draw_text("X", x + (w - xw) / 2, y + 2, px(20), rl.YELLOW)
+	for i in 0..<len(DEBUG_BUTTON_LABELS) {
+		bx, by, bw, bh := debug_button_rect(i)
+		rl.DrawRectangle(bx, by, bw, bh, rl.Color{40, 40, 40, 255})
+		rl.DrawRectangleLines(bx, by, bw, bh, rl.YELLOW)
+		draw_text(DEBUG_BUTTON_LABELS[i], bx + px(6), by + px(2), px(18), rl.WHITE)
+	}
+}
+
+// The button grid scrolls below the title, and the BACK button caps the bottom.
+level_select_view :: proc() -> (top, bottom: i32) {
+	top = px(120)
+	bottom = SCH - px(120)
+	if bottom < top + 1 do bottom = top + 1
+	return
+}
+
+level_grid_height :: proc() -> i32 {
+	n := len(LEVELS)
+	cols := 1
+	if n > 5 do cols = 2
+	if n > 10 do cols = 3
+	rows := (n + cols - 1) / cols
+	if rows < 1 do rows = 1
+	h := px(LEVEL_BTN_H)
+	gap := px(LEVEL_BTN_GAP)
+	return i32(rows) * (h + gap) - gap
+}
+
 level_button_rect :: proc(index: int) -> (x, y, w, h: i32) {
 	n := len(LEVELS)
 	cols := 1
@@ -74,7 +189,7 @@ level_button_rect :: proc(index: int) -> (x, y, w, h: i32) {
 	col := i32(index % cols)
 	row := i32(index / cols)
 	x = x0 + col * (w + gap)
-	y = px(130) + row * (h + gap)
+	y = px(130) + row * (h + gap) - i32(level_select_scroll)
 	return
 }
 
@@ -126,6 +241,12 @@ update_menus :: proc(screen: Screen, mouse: rl.Vector2, playing_level: int) -> (
 	next = screen
 	level_index = -1
 
+	update_debug_input(screen)
+	if debug_x_clicked(mouse) {
+		debug_mode = false
+		return
+	}
+
 	switch screen {
 	case .MENU:
 		play_x, play_y, play_w, play_h := main_button_rect(0)
@@ -138,14 +259,25 @@ update_menus :: proc(screen: Screen, mouse: rl.Vector2, playing_level: int) -> (
 			level_index = 0
 		} else if button_clicked(levels_x, levels_y, levels_w, levels_h, mouse) {
 			next = .LEVEL_SELECT
+			level_select_scroll = 0
 		} else if button_clicked(scores_x, scores_y, scores_w, scores_h, mouse) {
 			next = .SCORES
 		} else if button_clicked(quit_x, quit_y, quit_w, quit_h, mouse) {
 			quit = true
 		}
 	case .LEVEL_SELECT:
+		wheel := rl.GetMouseWheelMove()
+		if wheel != 0 {
+			level_select_scroll -= wheel * f32(px(48))
+		}
+		top, bottom := level_select_view()
+		max_scroll := px(130) + level_grid_height() - bottom
+		if max_scroll < 0 do max_scroll = 0
+		if level_select_scroll < 0 do level_select_scroll = 0
+		if level_select_scroll > f32(max_scroll) do level_select_scroll = f32(max_scroll)
 		for i in 0..<len(LEVELS) {
 			x, y, w, h := level_button_rect(i)
+			if y + h < top || y > bottom do continue
 			if button_clicked(x, y, w, h, mouse) {
 				next = .PLAY
 				start = true
@@ -208,7 +340,7 @@ update_menus :: proc(screen: Screen, mouse: rl.Vector2, playing_level: int) -> (
 }
 
 // Digits for the level-clear and you-lost crawl. Held only while one of those menus is up.
-// credits_overall is set when the run has ended: last level cleared, or last life lost.
+// credits_overall is the raw total when the run has ended: last level cleared, or last life lost.
 credits_digits: []u8
 credits_overall: []u8
 credits_scroll: f64
@@ -224,7 +356,49 @@ free_end_credits :: proc() {
 	free_digit_buf(&credits_overall)
 }
 
+// Comma-grouped digits. A leading minus stays put.
+comma_digits :: proc(text: string) -> []u8 {
+	start := 0
+	if len(text) > 0 && text[0] == '-' do start = 1
+	d := len(text) - start
+	if d <= 3 {
+		out := make([]u8, len(text))
+		copy(out, text)
+		return out
+	}
+	commas := (d - 1) / 3
+	out := make([]u8, len(text) + commas)
+	n := 0
+	copy(out[:start], text[:start])
+	n = start
+	first := d % 3
+	if first == 0 do first = 3
+	for i := 0; i < d; i += 1 {
+		out[n] = text[start + i]
+		n += 1
+		done := i + 1
+		if done < d && (done - first) % 3 == 0 {
+			out[n] = ','
+			n += 1
+		}
+	}
+	return out
+}
+
 store_digits :: proc(dst: ^[]u8, score: ^big.Int) {
+	free_digit_buf(dst)
+	text, err := big.itoa(score)
+	defer delete(text)
+	if err != big.Error.None || len(text) == 0 {
+		dst^ = make([]u8, 1)
+		dst^[0] = '0'
+		return
+	}
+	dst^ = comma_digits(text)
+}
+
+// The total's digits stay ungrouped, matching the totals example.
+store_raw_digits :: proc(dst: ^[]u8, score: ^big.Int) {
 	free_digit_buf(dst)
 	text, err := big.itoa(score)
 	defer delete(text)
@@ -235,6 +409,107 @@ store_digits :: proc(dst: ^[]u8, score: ^big.Int) {
 	}
 	dst^ = make([]u8, len(text))
 	copy(dst^, text)
+}
+
+// `YYYY-MM-DD` at the start of a saved stamp, drawn as `mm/dd/yyyy`.
+// `HH:MM:SS` after that is drawn as `h:mm:ss AM` or `PM`. A stamp with no clock keeps the date.
+total_date_label :: proc(stamp: string, buf: ^[32]byte) -> (text: cstring, ok: bool) {
+	if len(stamp) < 10 do return
+	dash1 := -1
+	dash2 := -1
+	for i in 0..<len(stamp) {
+		if stamp[i] == ' ' do break
+		if stamp[i] != '-' do continue
+		if dash1 < 0 do dash1 = i
+		else if dash2 < 0 do dash2 = i
+	}
+	if dash1 < 1 || dash2 != dash1 + 3 do return
+	day_end := dash2 + 3
+	if day_end > len(stamp) do return
+	if day_end < len(stamp) && stamp[day_end] != ' ' do return
+	for i in 0..<dash1 {
+		if stamp[i] < '0' || stamp[i] > '9' do return
+	}
+	for i in dash1 + 1 ..< dash2 {
+		if stamp[i] < '0' || stamp[i] > '9' do return
+	}
+	for i in dash2 + 1 ..< day_end {
+		if stamp[i] < '0' || stamp[i] > '9' do return
+	}
+	year_len := dash1
+	if year_len > 6 do return
+	n := 0
+	buf[n] = stamp[dash1 + 1]
+	n += 1
+	buf[n] = stamp[dash1 + 2]
+	n += 1
+	buf[n] = '/'
+	n += 1
+	buf[n] = stamp[dash2 + 1]
+	n += 1
+	buf[n] = stamp[dash2 + 2]
+	n += 1
+	buf[n] = '/'
+	n += 1
+	for i in 0..<year_len {
+		buf[n] = stamp[i]
+		n += 1
+	}
+	clock_at := day_end + 1
+	if day_end < len(stamp) && stamp[day_end] == ' ' && clock_at + 8 <= len(stamp) && stamp[clock_at + 2] == ':' && stamp[clock_at + 5] == ':' {
+		digits := true
+		offs := [6]int{0, 1, 3, 4, 6, 7}
+		for off in offs {
+			ch := stamp[clock_at + off]
+			if ch < '0' || ch > '9' do digits = false
+		}
+		if digits {
+			hour := int(stamp[clock_at] - '0') * 10 + int(stamp[clock_at + 1] - '0')
+			minute := int(stamp[clock_at + 3] - '0') * 10 + int(stamp[clock_at + 4] - '0')
+			second := int(stamp[clock_at + 6] - '0') * 10 + int(stamp[clock_at + 7] - '0')
+			if hour <= 23 && minute <= 59 && second <= 59 && n + 12 < len(buf) {
+				pm := hour >= 12
+				h := hour
+				if pm do h -= 12
+				if h == 0 do h = 12
+				buf[n] = ' '
+				n += 1
+				if h >= 10 {
+					buf[n] = '1'
+					n += 1
+					buf[n] = u8('0' + h - 10)
+					n += 1
+				} else {
+					buf[n] = u8('0' + h)
+					n += 1
+				}
+				buf[n] = ':'
+				n += 1
+				buf[n] = u8('0' + minute / 10)
+				n += 1
+				buf[n] = u8('0' + minute % 10)
+				n += 1
+				buf[n] = ':'
+				n += 1
+				buf[n] = u8('0' + second / 10)
+				n += 1
+				buf[n] = u8('0' + second % 10)
+				n += 1
+				buf[n] = ' '
+				n += 1
+				if pm {
+					buf[n] = 'P'
+				} else {
+					buf[n] = 'A'
+				}
+				n += 1
+				buf[n] = 'M'
+				n += 1
+			}
+		}
+	}
+	buf[n] = 0
+	return cstring(&buf[0]), true
 }
 
 credits_chars_per_line :: proc(size, max_w: i32) -> int {
@@ -332,133 +607,209 @@ draw_centered_line :: proc(text: cstring, y, size: i32) {
 	draw_text(text, x, y, size, rl.WHITE)
 }
 
+// The level-clear and you-lost crawl. A finished run adds the total in the totals-example order:
+// STATS, the date and 12-hour time, Total Score:, MAX SCORE nX + when this level hit the cap, then the raw digits.
+Credit_Kind :: enum {
+	LEVEL_HEAD,
+	LEVEL_DIGIT,
+	BLANK,
+	STATS,
+	DATE,
+	TOTAL_HEAD,
+	MAX_LINE,
+	TOTAL_DIGIT,
+	STAT,
+}
+
+Credit_Row :: struct {
+	kind:  Credit_Kind,
+	index: int,
+}
+
+credit_row_height :: proc(kind: Credit_Kind, line_h, digit_h, stats_h: i32) -> i32 {
+	if kind == .TOTAL_DIGIT do return digit_h
+	if kind == .STATS do return stats_h
+	return line_h
+}
+
 // Score digits wrap to the playfield. Stats follow. The block rises like credits and loops.
 // The title and the buttons are drawn after this, so the crawl passes behind them.
 draw_end_credits :: proc(mods: Power_Mods, balls: []Ball) {
 	size := px(26)
 	line_h := size + px(10)
 	if line_h < 1 do line_h = 1
+	digit_size := size / 2
+	if digit_size < px(8) do digit_size = px(8)
+	digit_h := digit_size + px(4)
+	if digit_h < 1 do digit_h = 1
+	stats_size := size * 3 / 2
+	stats_h := stats_size + px(8)
 	view_top := px(172)
 	view_h := SCH - view_top
 	if view_h < line_h do view_h = line_h
 
-	cpl := credits_chars_per_line(size, SCW - px(32))
-	if cpl < 1 do cpl = 1
+	level_cpl := credits_chars_per_line(size, SCW - px(32))
+	if level_cpl < 1 do level_cpl = 1
+	total_cpl := credits_chars_per_line(digit_size, SCW - px(32))
+	if total_cpl < 1 do total_cpl = 1
 	digit_lines := 1
 	if len(credits_digits) > 0 {
-		digit_lines = (len(credits_digits) + cpl - 1) / cpl
+		digit_lines = (len(credits_digits) + level_cpl - 1) / level_cpl
 	}
 	alive := 0
 	for ball in balls {
 		if ball.alive do alive += 1
 	}
-	// Header, digit lines, then on a finished run a blank, OVERALL, and those digits.
-	// A blank, STATS, seven counts, and one speed line per living ball follow.
-	extra := 0
-	overall_lines := 0
-	if len(credits_overall) > 0 {
-		overall_lines = (len(credits_overall) + cpl - 1) / cpl
-		if overall_lines < 1 do overall_lines = 1
-		extra = 2 + overall_lines
+
+	date_buf: [32]byte
+	date_text, has_date := total_date_label(run_total_stamp, &date_buf)
+	show_total := len(credits_overall) > 0
+	total_lines := 0
+	if show_total {
+		total_lines = 1
+		if len(credits_overall) > 0 {
+			total_lines = (len(credits_overall) + total_cpl - 1) / total_cpl
+		}
+		if total_lines < 1 do total_lines = 1
 	}
-	lead := 1 + digit_lines + extra
-	total := digit_lines + extra + 10 + alive
+	max_buf: [64]byte
+	if show_total && round_max_score > 0 {
+		n := append_text(&max_buf, 0, "MAX SCORE ")
+		n = append_i64(&max_buf, n, round_max_score)
+		n = append_text(&max_buf, n, "X +")
+		max_buf[n] = 0
+	}
+
+	rows := make([dynamic]Credit_Row)
+	defer delete(rows)
+	append(&rows, Credit_Row{kind = .LEVEL_HEAD})
+	for i in 0..<digit_lines {
+		append(&rows, Credit_Row{kind = .LEVEL_DIGIT, index = i})
+	}
+	append(&rows, Credit_Row{kind = .BLANK})
+	append(&rows, Credit_Row{kind = .STATS})
+	if show_total {
+		if has_date do append(&rows, Credit_Row{kind = .DATE})
+		append(&rows, Credit_Row{kind = .TOTAL_HEAD})
+		if round_max_score > 0 do append(&rows, Credit_Row{kind = .MAX_LINE})
+		for i in 0..<total_lines {
+			append(&rows, Credit_Row{kind = .TOTAL_DIGIT, index = i})
+		}
+	}
+	for slot in 0..<8 + alive {
+		append(&rows, Credit_Row{kind = .STAT, index = slot})
+	}
+
+	total_h := i32(0)
+	for row in rows {
+		total_h += credit_row_height(row.kind, line_h, digit_h, stats_h)
+	}
 
 	dt := f64(rl.GetFrameTime())
 	if dt < 0 do dt = 0
 	if dt > 0.05 do dt = 0.05
 	credits_scroll += f64(px(36)) * dt
-	span := f64(total * int(line_h) + int(view_h))
+	span := f64(int(total_h) + int(view_h))
 	if span < 1 do span = 1
 	for credits_scroll >= span {
 		credits_scroll -= span
 	}
 
-	base := f64(view_top + view_h) - credits_scroll
-	first := int((f64(view_top) - base) / f64(line_h))
-	if first < 0 do first = 0
-	if first > total do first = total
-	last := first + int(view_h / line_h) + 3
-	if last > total do last = total
-	if first > last do first = last
-
 	digit_w := measure_text("0", size)
 	if digit_w < 1 do digit_w = size
-	block_w := i32(cpl) * digit_w
+	block_w := i32(level_cpl) * digit_w
 	digit_x := (SCW - block_w) / 2
 	if digit_x < px(16) do digit_x = px(16)
-	line_buf := make([]u8, cpl + 1)
+	buf_cpl := level_cpl
+	if total_cpl > buf_cpl do buf_cpl = total_cpl
+	line_buf := make([]u8, buf_cpl + 1)
 	defer delete(line_buf)
 
+	base := f64(view_top + view_h) - credits_scroll
+	y := base
 	rl.BeginScissorMode(0, c.int(view_top), c.int(SCW), c.int(view_h))
-	for i in first ..< last {
-		y := i32(base + f64(i) * f64(line_h))
-		if i == 0 {
+	for row in rows {
+		h := credit_row_height(row.kind, line_h, digit_h, stats_h)
+		top := y
+		y += f64(h)
+		if y < f64(view_top) do continue
+		if top > f64(view_top) + f64(view_h) do break
+		ty := i32(top)
+		switch row.kind {
+		case .LEVEL_HEAD:
 			if credits_for == .LEVEL_END {
-				draw_centered_line("LEVEL SCORE", y, size)
+				draw_centered_line("LEVEL SCORE", ty, size)
 			} else {
-				draw_centered_line("SCORE", y, size)
+				draw_centered_line("SCORE", ty, size)
 			}
-			continue
-		}
-		if i >= 1 && i < 1 + digit_lines {
-			draw_digit_line(credits_digits, i - 1, cpl, digit_x, y, size, line_buf)
-			continue
-		}
-		if extra > 0 && i < lead {
-			rel := i - (1 + digit_lines)
-			if rel == 0 do continue
-			if rel == 1 {
-				draw_centered_line("OVERALL", y, size)
-				continue
+		case .LEVEL_DIGIT:
+			draw_digit_line(credits_digits, row.index, level_cpl, digit_x, ty, size, line_buf)
+		case .BLANK:
+		case .STATS:
+			draw_centered_line("STATS", ty, stats_size)
+		case .DATE:
+			draw_centered_line(date_text, ty, size)
+		case .TOTAL_HEAD:
+			draw_centered_line("Total Score:", ty, size)
+		case .MAX_LINE:
+			draw_centered_line(cstring(&max_buf[0]), ty, size)
+		case .TOTAL_DIGIT:
+			start := row.index * total_cpl
+			end := start + total_cpl
+			if start > len(credits_overall) do start = len(credits_overall)
+			if end > len(credits_overall) do end = len(credits_overall)
+			n := 0
+			for k in start..<end {
+				line_buf[n] = credits_overall[k]
+				n += 1
 			}
-			draw_digit_line(credits_overall, rel - 2, cpl, digit_x, y, size, line_buf)
-			continue
-		}
-		if i == lead do continue
-		if i == lead + 1 {
-			draw_centered_line("STATS", y, size)
-			continue
-		}
-		slot := i - (lead + 2)
-		label: [64]byte
-		text: cstring
-		if slot == 0 {
-			text = format_time_label(&label, round_elapsed_ns)
-		} else if slot == 1 {
-			text = format_named_count(&label, "POWERUPS ", round_powerups)
-		} else if slot == 2 {
-			text = format_named_count(&label, "BALLS LOST ", round_balls_lost)
-		} else if slot == 3 {
-			text = format_named_count(&label, "BALLS LEFT ", i64(alive))
-		} else if slot == 4 {
-			lives := mods.lives
-			if lives < 0 do lives = 0
-			text = format_named_count(&label, "LIVES ", i64(lives))
-		} else if slot == 5 {
-			text = format_named_count(&label, "LIVES LOST ", round_lives_lost)
-		} else if slot == 6 {
-			text = format_named_count(&label, "PAD ", i64(mods.pad_w))
-		} else {
-			want := slot - 7
-			seen := 0
-			speed: i32
-			for ball in balls {
-				if !ball.alive do continue
-				if seen == want {
-					speed = ball_score_speed(ball)
-					break
+			if n < len(line_buf) do line_buf[n] = 0
+			text := cstring(raw_data(line_buf))
+			tw := measure_text(text, digit_size)
+			draw_text(text, (SCW - tw) / 2, ty, digit_size, rl.WHITE)
+		case .STAT:
+			slot := row.index
+			label: [64]byte
+			text: cstring
+			if slot == 0 {
+				text = format_time_label(&label, round_elapsed_ns)
+			} else if slot == 1 {
+				text = format_named_count(&label, "POWERUPS ", round_powerups)
+			} else if slot == 2 {
+				text = format_named_count(&label, "BALLS LOST ", round_balls_lost)
+			} else if slot == 3 {
+				text = format_named_count(&label, "BALLS LEFT ", i64(alive))
+			} else if slot == 4 {
+				lives := mods.lives
+				if lives < 0 do lives = 0
+				text = format_named_count(&label, "LIVES ", i64(lives))
+			} else if slot == 5 {
+				text = format_named_count(&label, "LIVES LOST ", round_lives_lost)
+			} else if slot == 6 {
+				text = format_named_count(&label, "PAD ", i64(mods.pad_w))
+			} else if slot == 7 {
+				text = format_named_count(&label, "MAX SCORE ", round_max_score)
+			} else {
+				want := slot - 8
+				seen := 0
+				speed: i32
+				for ball in balls {
+					if !ball.alive do continue
+					if seen == want {
+						speed = ball_score_speed(ball)
+						break
+					}
+					seen += 1
 				}
-				seen += 1
+				n := append_text(&label, 0, "BALL ")
+				n = append_i64(&label, n, i64(want + 1))
+				n = append_text(&label, n, " SPEED ")
+				n = append_i64(&label, n, i64(speed))
+				label[n] = 0
+				text = cstring(&label[0])
 			}
-			n := append_text(&label, 0, "BALL ")
-			n = append_i64(&label, n, i64(want + 1))
-			n = append_text(&label, n, " SPEED ")
-			n = append_i64(&label, n, i64(speed))
-			label[n] = 0
-			text = cstring(&label[0])
+			draw_centered_line(text, ty, size)
 		}
-		draw_centered_line(text, y, size)
 	}
 	rl.EndScissorMode()
 }
@@ -486,15 +837,45 @@ prepare_end_credits :: proc(screen: Screen, score: ^big.Int) {
 		return
 	}
 	if credits_for == screen {
-		// A failed save retries on a later frame. Pick up OVERALL once that write lands.
+		// A failed save retries on a later frame. Pick up the total once that write lands.
 		if run_show_overall && len(credits_overall) == 0 {
-			store_digits(&credits_overall, &run_overall)
+			store_raw_digits(&credits_overall, &run_overall)
 		}
 		return
 	}
 	store_digits(&credits_digits, score)
+	if round_max_score > 0 {
+		// The wrapped score block reads `MAX SCORE nX + <digits>` once the cap has been hit.
+		prefix_buf: [32]byte
+		n := 0
+		for ch in "MAX SCORE " {
+			prefix_buf[n] = u8(ch)
+			n += 1
+		}
+		v := round_max_score
+		tmp: [12]byte
+		count := 0
+		for v > 0 {
+			tmp[count] = u8('0') + u8(v % 10)
+			v /= 10
+			count += 1
+		}
+		for i := count - 1; i >= 0; i -= 1 {
+			prefix_buf[n] = tmp[i]
+			n += 1
+		}
+		for ch in "X + " {
+			prefix_buf[n] = u8(ch)
+			n += 1
+		}
+		combined := make([]u8, n + len(credits_digits))
+		copy(combined, prefix_buf[:n])
+		copy(combined[n:], credits_digits)
+		free_digit_buf(&credits_digits)
+		credits_digits = combined
+	}
 	if run_show_overall {
-		store_digits(&credits_overall, &run_overall)
+		store_raw_digits(&credits_overall, &run_overall)
 	} else {
 		free_digit_buf(&credits_overall)
 	}
@@ -502,11 +883,11 @@ prepare_end_credits :: proc(screen: Screen, score: ^big.Int) {
 	credits_for = screen
 }
 
-// Each saved score is flat text in the center of the playfield. It scales from a speck to larger than the screen.
+// Each saved total is flat text in the center of the playfield: the date, Total Score:, then the raw digits. It scales from a speck to larger than the screen.
 // fill is the larger of the block's width and height, as a fraction of the playfield.
 // The size is multiplied by the same amount each moment, so the zoom does not rush and then crawl.
 // The next score waits SCORE_POP_GAP seconds after the previous one finishes, so the zooms do not overlap.
-SCORE_POP_CPL :: 12
+SCORE_POP_CPL :: 48
 SCORE_POP_SECONDS :: f32(6)
 SCORE_POP_GAP :: f32(1)
 SCORE_POP_TINY :: f32(0.05)
@@ -605,59 +986,73 @@ draw_score_pops :: proc() {
 	if index >= n do index = n - 1
 	local := score_pop_t - f32(index) * slot
 	if local < 0 || local >= SCORE_POP_SECONDS do return
-	draw_score_pop(index, score_lines[index], local / SCORE_POP_SECONDS)
+	draw_score_pop(score_lines[index].stamp, score_lines[index].text, local / SCORE_POP_SECONDS)
 }
 
-draw_score_pop :: proc(index: int, digits: string, phase: f32) {
+// Date and 12-hour time, then `Total Score:`, then the raw digits at a smaller size. No commas.
+draw_score_pop :: proc(stamp: string, digits: string, phase: f32) {
 	fill := score_pop_fill(phase)
 	alpha := score_pop_alpha(fill)
 	if alpha == 0 do return
 
-	header: [64]byte
-	hn := append_text(&header, 0, "SCORE ")
-	hn = append_i64(&header, hn, i64(index + 1))
-	header[hn] = 0
-
-	digit_lines := 1
+	date_buf: [32]byte
+	date_text, has_date := total_date_label(stamp, &date_buf)
+	digit_lines := 0
 	if len(digits) > 0 {
 		digit_lines = (len(digits) + SCORE_POP_CPL - 1) / SCORE_POP_CPL
 	}
-	if digit_lines < 1 do digit_lines = 1
-	total_lines := digit_lines + 1
 
-	ref := SCORE_POP_REF
-	header_w := score_measure(cstring(&header[0]), ref)
-	max_w := header_w
-	line_buf: [SCORE_POP_CPL + 1]byte
-	for li in 0 ..< digit_lines {
-		if score_digit_line(digits, li, &line_buf) == 0 do continue
-		w := score_measure(cstring(&line_buf[0]), ref)
+	head_ref := SCORE_POP_REF
+	digit_ref := SCORE_POP_REF * 0.42
+	head_step := head_ref * 7 / 6
+	digit_step := digit_ref * 7 / 6
+	max_w := score_measure("Total Score:", head_ref)
+	ink_h := head_ref
+	if has_date {
+		w := score_measure(date_text, head_ref)
 		if w > max_w do max_w = w
+		ink_h = head_step + head_ref
 	}
-	line_step := ref * 7 / 6
-	ink_h := line_step * f32(total_lines - 1) + ref
+	line_buf: [SCORE_POP_CPL + 1]byte
+	if digit_lines > 0 {
+		ink_h += head_step - head_ref
+		ink_h += digit_step * f32(digit_lines - 1) + digit_ref
+		for li in 0..<digit_lines {
+			if score_digit_line(digits, li, &line_buf) == 0 do continue
+			w := score_measure(cstring(&line_buf[0]), digit_ref)
+			if w > max_w do max_w = w
+		}
+	}
 	limit := ink_h / f32(SCH)
 	wide := max_w / f32(SCW)
 	if wide > limit do limit = wide
 	if limit < 0.001 do return
-	size := ref * fill / limit
+	scale := fill / limit
+	head_size := head_ref * scale
+	digit_size := digit_ref * scale
+	head_pitch := head_step * scale
+	digit_pitch := digit_step * scale
 
 	color := rl.Color{255, 255, 255, alpha}
-	step := size * 7 / 6
-	block_h := step * f32(total_lines - 1) + size
-	y := (f32(SCH) - block_h) * 0.5
-	hw := score_measure(cstring(&header[0]), size)
-	score_draw_line(cstring(&header[0]), (f32(SCW) - hw) * 0.5, y, size, color)
-	y += step
-	for li in 0 ..< digit_lines {
+	y := (f32(SCH) - ink_h * scale) * 0.5
+	if has_date {
+		dw := score_measure(date_text, head_size)
+		score_draw_line(date_text, (f32(SCW) - dw) * 0.5, y, head_size, color)
+		y += head_pitch
+	}
+	tw := score_measure("Total Score:", head_size)
+	score_draw_line("Total Score:", (f32(SCW) - tw) * 0.5, y, head_size, color)
+	y += head_pitch
+	for li in 0..<digit_lines {
 		if score_digit_line(digits, li, &line_buf) == 0 do continue
-		w := score_measure(cstring(&line_buf[0]), size)
-		score_draw_line(cstring(&line_buf[0]), (f32(SCW) - w) * 0.5, y, size, color)
-		y += step
+		text := cstring(&line_buf[0])
+		w := score_measure(text, digit_size)
+		score_draw_line(text, (f32(SCW) - w) * 0.5, y, digit_size, color)
+		y += digit_pitch
 	}
 }
 
-// Main menu, level select, and past scores fill the screen. Pause, level clear, and you lost draw over the playfield.
+// Main menu, level select, and totals fill the screen. Pause, level clear, and you lost draw over the playfield.
 draw_menus :: proc(screen: Screen, mouse: rl.Vector2, score: ^big.Int, playing_level: int, mods: Power_Mods, balls: []Ball) {
 	prepare_end_credits(screen, score)
 	switch screen {
@@ -669,16 +1064,19 @@ draw_menus :: proc(screen: Screen, mouse: rl.Vector2, score: ^big.Int, playing_l
 		quit_x, quit_y, quit_w, quit_h := main_button_rect(3)
 		draw_button("PLAY", play_x, play_y, play_w, play_h, mouse)
 		draw_button("LEVEL SELECT", levels_x, levels_y, levels_w, levels_h, mouse)
-		draw_button("PAST SCORES", scores_x, scores_y, scores_w, scores_h, mouse)
+		draw_button("TOTALS", scores_x, scores_y, scores_w, scores_h, mouse)
 		draw_button("QUIT", quit_x, quit_y, quit_w, quit_h, mouse)
 	case .LEVEL_SELECT:
 		draw_centered_text("SELECT LEVEL", px(48), px(36), rl.WHITE)
+		top, bottom := level_select_view()
+		rl.BeginScissorMode(0, top, SCW, bottom - top)
 		for i in 0..<len(LEVELS) {
 			buf: [16]byte
 			label := format_level_label(i, &buf)
 			x, y, w, h := level_button_rect(i)
 			draw_button(label, x, y, w, h, mouse)
 		}
+		rl.EndScissorMode()
 		bx, by, bw, bh := back_button_rect()
 		draw_button("BACK", bx, by, bw, bh, mouse)
 	case .PLAY:
@@ -713,7 +1111,7 @@ draw_menus :: proc(screen: Screen, mouse: rl.Vector2, score: ^big.Int, playing_l
 		draw_button("QUIT", quit_x, quit_y, quit_w, quit_h, mouse)
 	case .SCORES:
 		draw_score_pops()
-		draw_centered_text("PAST SCORES", px(48), px(36), rl.WHITE)
+		draw_centered_text("TOTALS", px(48), px(36), rl.WHITE)
 		if len(score_lines) == 0 {
 			draw_centered_text("NO SCORES", px(220), px(32), rl.WHITE)
 		}

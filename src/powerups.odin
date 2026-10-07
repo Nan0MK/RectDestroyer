@@ -2,6 +2,7 @@ package src
 
 import "core:fmt"
 import big "core:math/big"
+import "core:math"
 import "core:math/rand"
 import "core:os"
 import "core:strconv"
@@ -46,6 +47,7 @@ Powerup_Kind :: enum {
 	STICK,
 	LIFE,
 	FAST,
+	BONUS,
 }
 
 // Collected state for the run. A new level clears everything here except lives, when the caller asks to keep them.
@@ -77,6 +79,7 @@ powerup_kind_from_name :: proc(name: string) -> (Powerup_Kind, bool) {
 	case "stick": return .STICK, true
 	case "life": return .LIFE, true
 	case "fast": return .FAST, true
+	case "bonus": return .BONUS, true
 	case: return {}, false
 	}
 }
@@ -222,7 +225,7 @@ roll_percent :: proc(chance: i32) -> bool {
 	return rand.int_max(100) < int(chance)
 }
 
-apply_powerup :: proc(kind: Powerup_Kind, mods: ^Power_Mods) {
+apply_powerup :: proc(kind: Powerup_Kind, mods: ^Power_Mods, score: ^big.Int) {
 	switch kind {
 	case .WIDE:
 		mods.pad_w += WIDE_STEP
@@ -235,13 +238,22 @@ apply_powerup :: proc(kind: Powerup_Kind, mods: ^Power_Mods) {
 		mods.lives += 1
 	case .FAST:
 		mods.fast = true
+	case .BONUS:
+		// Replaces the running total with its square.
+		if score == nil do return
+		product: big.Int
+		defer big.destroy(&product)
+		if big.set(&product, i64(0)) != big.Error.None do return
+		if big.mul(&product, score, score) != big.Error.None do return
+		big.copy(score, &product)
+		clamp_score(score, true)
 	case .BOMB:
 		// Bomb is a RECT effect. It runs from the hit, not from a catch.
 	}
 }
 
 // Roll the brick's drop list. PAD drops start falling. BALL drops apply now. RECT effects already ran on the hit.
-grant_brick_drops :: proc(brick: Brick, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods) {
+grant_brick_drops :: proc(brick: Brick, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods, score: ^big.Int) {
 	for i in 0..<brick.drop_count {
 		drop := brick.drops[i]
 		if drop.target == .RECT do continue
@@ -254,7 +266,7 @@ grant_brick_drops :: proc(brick: Brick, falling: ^[dynamic]Falling_Powerup, mods
 				kind = drop.kind,
 			})
 		case .BALL:
-			apply_powerup(drop.kind, mods)
+			apply_powerup(drop.kind, mods, score)
 			note_powerup_collected()
 		case .RECT:
 		}
@@ -279,7 +291,7 @@ consider_bomb :: proc(bricks: ^[dynamic]Brick, index: int, exploded: []bool, que
 	if !roll_percent(chance) do return
 	exploded[index] = true
 	append(queue, index)
-	play_explosion(bricks[index].x, bricks[index].y)
+	play_explosion(bricks[index].x, bricks[index].y, 0)
 	play_bomb_explode()
 }
 
@@ -290,7 +302,7 @@ damage_from_blast :: proc(bricks: ^[dynamic]Brick, index: int, exploded: []bool,
 	brick.hp -= 1
 	consider_bomb(bricks, index, exploded, queue)
 	if brick.hp <= 0 {
-		grant_brick_drops(brick^, falling, mods)
+		grant_brick_drops(brick^, falling, mods, score)
 		score_add_i64(score, brick_points(elapsed_ns))
 	}
 }
@@ -389,7 +401,7 @@ rects_overlap :: proc(ax, ay, aw, ah, bx, by, bw, bh: i32) -> bool {
 	return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by
 }
 
-update_falling_powerups :: proc(drops: ^[dynamic]Falling_Powerup, pad_left, pad_top, pad_h: i32, mods: ^Power_Mods, dt: f32) {
+update_falling_powerups :: proc(drops: ^[dynamic]Falling_Powerup, pad_left, pad_top, pad_h: i32, mods: ^Power_Mods, dt: f32, score: ^big.Int) {
 	for i := len(drops) - 1; i >= 0; i -= 1 {
 		drops[i].y += DROP_SPEED * dt
 		left := i32(drops[i].x) - DROP_W / 2
@@ -399,8 +411,9 @@ update_falling_powerups :: proc(drops: ^[dynamic]Falling_Powerup, pad_left, pad_
 			continue
 		}
 		if rects_overlap(left, top, DROP_W, DROP_H, pad_left, pad_top, mods.pad_w, pad_h) {
-			apply_powerup(drops[i].kind, mods)
+			apply_powerup(drops[i].kind, mods, score)
 			note_powerup_collected()
+			play_pad_collect_powerup()
 			ordered_remove(drops, i)
 		}
 	}
@@ -445,6 +458,7 @@ powerup_texture_stem :: proc(kind: Powerup_Kind) -> string {
 	case .STICK: return "powerup_stick"
 	case .LIFE: return "powerup_life"
 	case .FAST: return "powerup_fast"
+	case .BONUS: return "powerup_bonus"
 	}
 	return ""
 }
@@ -475,6 +489,7 @@ powerup_mark :: proc(kind: Powerup_Kind) -> (text: cstring, fill: rl.Color) {
 	case .STICK: text, fill = "S", rl.BROWN
 	case .LIFE: text, fill = "L", rl.SKYBLUE
 	case .FAST: text, fill = "F", rl.ORANGE
+	case .BONUS: text, fill = "B", rl.GOLD
 	}
 	return
 }
@@ -596,6 +611,32 @@ render_power_status :: proc(mods: Power_Mods) {
 		fast_buf: [24]byte
 		label := format_prefixed("FAST ", 1 + mods.speed_bonus, &fast_buf)
 		draw_text(label, left, y, size, rl.ORANGE)
+		y += step
+	}
+	dmg := super_hit_damage()
+	if dmg > 1 {
+		double_buf: [24]byte
+		label := format_prefixed("DOUBLE ", dmg, &double_buf)
+		draw_text(label, left, y, size, rl.YELLOW)
+		y += step
+	}
+	radius := super_explode_radius()
+	if radius > 0 {
+		explode_buf: [24]byte
+		label := format_prefixed("EXPLODE ", radius, &explode_buf)
+		draw_text(label, left, y, size, rl.RED)
+		y += step
+	}
+	if super_targeting_active() {
+		target_buf: [24]byte
+		label := format_prefixed("TARGETING ", super_targeting_chance(), &target_buf)
+		end := 0
+		for end < len(target_buf) && target_buf[end] != 0 do end += 1
+		if end < len(target_buf) - 1 {
+			target_buf[end] = '%'
+			target_buf[end + 1] = 0
+		}
+		draw_text(label, left, y, size, rl.SKYBLUE)
 	}
 }
 
@@ -618,4 +659,522 @@ render_multiply_timer :: proc(until: f64) {
 	n += 1
 	buf[n] = 0
 	draw_text(cstring(&buf[0]), px(16), px(16), px(20), rl.YELLOW)
+}
+
+// Super powerups. src/super_powerup_types.txt names each one. Comments under a name
+// give the MAX SCORE counts that add a stack (`1x to 50x`, `4x to 12x`, or `5 thru 10`)
+// and a chance. A line that adds a percent on each later MAX SCORE sets chance_step.
+// Every cap hit adds one stack. The effects stack with each other. They last across levels
+// until the last life is lost, or until PLAY or LEVEL SELECT starts a new run.
+SUPER_POWERUP_TYPES_PATH :: "src/super_powerup_types.txt"
+
+Super_Kind :: enum {
+	DOUBLE,
+	EXPLODE,
+	TARGETING,
+}
+
+Super_Band :: struct {
+	kind:        Super_Kind,
+	from_x:      i32,
+	to_x:        i32,
+	chance:      i32,
+	chance_step: i32,
+}
+
+super_bands: [dynamic]Super_Band
+super_ready: bool
+// Stacks earned this run. Not the per-level MAX SCORE counter.
+run_super_count: i32
+
+super_kind_from_name :: proc(name: string) -> (Super_Kind, bool) {
+	switch name {
+	case "double": return .DOUBLE, true
+	case "explode": return .EXPLODE, true
+	case "targeting": return .TARGETING, true
+	case: return {}, false
+	}
+}
+
+comment_has :: proc(line, needle: string) -> bool {
+	if len(needle) == 0 || len(needle) > len(line) do return false
+	last := len(line) - len(needle)
+	for i in 0 ..= last {
+		if line[i:i + len(needle)] == needle do return true
+	}
+	return false
+}
+
+// Pull `1x to 50x`, `5 thru 10`, and percents out of one comment line.
+// A line that says the chance is added on a later MAX SCORE stores that percent as the step.
+note_super_comment :: proc(band: ^Super_Band, line: string) {
+	xs: [4]i32
+	xn := 0
+	bare: [4]i32
+	bn := 0
+	step_line := comment_has(line, "subsequent") || comment_has(line, "adds")
+	i := 0
+	for i < len(line) {
+		if line[i] < '0' || line[i] > '9' {
+			i += 1
+			continue
+		}
+		v := 0
+		for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+			digit := int(line[i] - '0')
+			if v <= 100000 do v = v * 10 + digit
+			i += 1
+		}
+		if i < len(line) && (line[i] == 'x' || line[i] == 'X') {
+			if xn < len(xs) {
+				xs[xn] = i32(v)
+				xn += 1
+			}
+			i += 1
+		} else if i < len(line) && line[i] == '%' {
+			pct := i32(v)
+			if pct > 100 do pct = 100
+			if pct < 0 do pct = 0
+			if step_line do band.chance_step = pct
+			else do band.chance = pct
+			i += 1
+		} else if bn < len(bare) {
+			bare[bn] = i32(v)
+			bn += 1
+		}
+	}
+	from: i32
+	to: i32
+	ranged := false
+	if xn >= 2 {
+		from = xs[0]
+		to = xs[1]
+		ranged = true
+	} else if xn == 0 && bn >= 2 {
+		from = bare[0]
+		to = bare[1]
+		ranged = true
+	}
+	if ranged {
+		if to < from {
+			from, to = to, from
+		}
+		band.from_x = from
+		band.to_x = to
+	} else if xn == 1 && band.from_x == 0 {
+		band.from_x = xs[0]
+		band.to_x = xs[0]
+	}
+}
+
+load_super_powerups :: proc() {
+	if super_ready do return
+	super_ready = true
+	data, err := os.read_entire_file_or_err(SUPER_POWERUP_TYPES_PATH, context.allocator)
+	if err != nil {
+		fmt.eprintf("Failed to read '%s': %v\n", SUPER_POWERUP_TYPES_PATH, err)
+		return
+	}
+	defer delete(data)
+
+	text := string(data)
+	current := -1
+	start := 0
+	for i := 0; i <= len(text); i += 1 {
+		if i != len(text) && text[i] != '\n' do continue
+		line := text[start:i]
+		if n := len(line); n > 0 && line[n - 1] == '\r' {
+			line = line[:n - 1]
+		}
+		start = i + 1
+		trimmed := trim_space(line)
+		if len(trimmed) == 0 do continue
+		if trimmed[0] == '#' {
+			if current >= 0 {
+				note_super_comment(&super_bands[current], trimmed)
+			}
+			continue
+		}
+		name, _ := read_token(trimmed, 0)
+		kind, known := super_kind_from_name(name)
+		if !known {
+			fmt.eprintf("Unknown super powerup '%s'\n", name)
+			current = -1
+			continue
+		}
+		append(&super_bands, Super_Band{kind = kind})
+		current = len(super_bands) - 1
+	}
+	for &band in super_bands {
+		if band.from_x < 1 {
+			fmt.eprintf("Super powerup '%v' has no MAX SCORE range\n", band.kind)
+		}
+	}
+}
+
+ensure_super_powerups :: proc() {
+	if super_ready do return
+	load_super_powerups()
+}
+
+shutdown_super_powerups :: proc() {
+	delete(super_bands)
+	super_bands = {}
+	super_ready = false
+	run_super_count = 0
+}
+
+add_super_powerup :: proc() {
+	if run_super_count < max(i32) do run_super_count += 1
+}
+
+// One more stack of that effect. The file's range is the room.
+// A chance that keeps growing after that range can be granted until the chance is 100%.
+// Granting a later effect keeps the earlier ones, because the stacks do not replace each other.
+grant_debug_super :: proc(kind: Super_Kind) {
+	ensure_super_powerups()
+	for band in super_bands {
+		if band.kind != kind || band.from_x < 1 do continue
+		room := band.to_x - band.from_x + 1
+		if band.chance_step > 0 && band.chance < 100 {
+			room += (100 - band.chance) / band.chance_step
+		}
+		if room < 1 do return
+		have: i32 = 0
+		if run_super_count >= band.from_x {
+			have = run_super_count - band.from_x + 1
+		}
+		if have >= room do return
+		next := band.from_x + have
+		if run_super_count < next {
+			run_super_count = next
+		} else if run_super_count < max(i32) {
+			run_super_count += 1
+		}
+		return
+	}
+}
+
+clear_super_powerups :: proc() {
+	run_super_count = 0
+}
+
+// How many stacks of this effect the run has earned. Counts outside the file's range add nothing.
+super_stacks :: proc(kind: Super_Kind) -> i32 {
+	ensure_super_powerups()
+	total: i32 = 0
+	for band in super_bands {
+		if band.kind != kind || band.from_x < 1 do continue
+		if run_super_count < band.from_x do continue
+		last := run_super_count
+		if last > band.to_x do last = band.to_x
+		total += last - band.from_x + 1
+	}
+	return total
+}
+
+// Each double stack doubles the hit. No stacks deal 1.
+// i32 holds 2^30. Later doubles stay there instead of wrapping.
+super_hit_damage :: proc() -> i32 {
+	stacks := super_stacks(.DOUBLE)
+	damage: i32 = 1
+	limit := max(i32) / 2
+	for _ in 0 ..< stacks {
+		if damage > limit do return damage
+		damage *= 2
+	}
+	return damage
+}
+
+// Each explode stack adds one grid step of blast radius. The first is the orthogonal neighbors.
+super_explode_radius :: proc() -> i32 {
+	return super_stacks(.EXPLODE)
+}
+
+super_targeting_band :: proc() -> (band: Super_Band, ok: bool) {
+	ensure_super_powerups()
+	for item in super_bands {
+		if item.kind == .TARGETING && item.from_x >= 1 {
+			return item, true
+		}
+	}
+	return
+}
+
+super_targeting_active :: proc() -> bool {
+	band, ok := super_targeting_band()
+	if !ok || run_super_count < band.from_x do return false
+	if run_super_count <= band.to_x do return true
+	return band.chance_step > 0
+}
+
+// Inside the file's range the chance is the one written there.
+// Each MAX SCORE after that range adds the step, up to 100%.
+super_targeting_chance :: proc() -> i32 {
+	band, ok := super_targeting_band()
+	if !ok || run_super_count < band.from_x do return 0
+	pct := band.chance
+	if run_super_count > band.to_x {
+		if band.chance_step <= 0 do return 0
+		pct += (run_super_count - band.to_x) * band.chance_step
+	}
+	if pct > 100 do pct = 100
+	if pct < 0 do pct = 0
+	return pct
+}
+
+// True when `next` reverses `bounce` or leaves the surface more slowly than that bounce.
+departure_lost :: proc(bounce, next: f32) -> bool {
+	if bounce > 0 do return next < bounce
+	if bounce < 0 do return next > bounce
+	return false
+}
+
+// Keep a locked axis and put the rest of `mag` on the free axis, without pointing the locked axis backward.
+fit_aim_speed :: proc(vx, vy, mag: f32, lock_x, lock_y: bool) -> (out_x, out_y: f32) {
+	out_x = vx
+	out_y = vy
+	if !lock_x && !lock_y do return
+	if lock_x && lock_y {
+		len := math.sqrt(out_x * out_x + out_y * out_y)
+		if len > mag && len > 0.001 {
+			scale := mag / len
+			out_x *= scale
+			out_y *= scale
+		}
+		return
+	}
+	if lock_x {
+		if out_x > mag {
+			out_x = mag
+			out_y = 0
+			return
+		}
+		if out_x < -mag {
+			out_x = -mag
+			out_y = 0
+			return
+		}
+		gap := mag * mag - out_x * out_x
+		if gap < 0 do gap = 0
+		room := math.sqrt(gap)
+		if out_y > room do out_y = room
+		else if out_y < -room do out_y = -room
+		return
+	}
+	if out_y > mag {
+		out_y = mag
+		out_x = 0
+		return
+	}
+	if out_y < -mag {
+		out_y = -mag
+		out_x = 0
+		return
+	}
+	gap := mag * mag - out_y * out_y
+	if gap < 0 do gap = 0
+	room := math.sqrt(gap)
+	if out_x > room do out_x = room
+	else if out_x < -room do out_x = -room
+	return
+}
+
+// Point the ball straight at a brick center and keep its speed.
+// Later frames do not turn it, so the path is that line.
+// The pad, a wall, or the ceiling can still refuse a line that points back into the surface the ball is touching.
+aim_ball_at_point :: proc(ball: ^Ball, tx, ty: i32, bounce_vx, bounce_vy: f32, pad_left, pad_w: i32) {
+	aim_x := f32(tx - ball.x)
+	aim_y := f32(ty - ball.y)
+	aim_len := math.sqrt(aim_x * aim_x + aim_y * aim_y)
+	if aim_len < 1 do return
+	mag := math.sqrt(bounce_vx * bounce_vx + bounce_vy * bounce_vy)
+	if mag < 0.001 do mag = 1
+	vx := aim_x / aim_len * mag
+	vy := aim_y / aim_len * mag
+
+	lock_x := false
+	lock_y := false
+	if ball.y < SCREEN_TOP && vy < 0 {
+		vy = bounce_vy if bounce_vy > 0 else 0
+		lock_y = true
+	}
+	if ball.x < SCREEN_LEFT && vx < 0 {
+		vx = bounce_vx if bounce_vx > 0 else 0
+		lock_x = true
+	}
+	if ball.x > SCREEN_RIGHT && vx > 0 {
+		vx = bounce_vx if bounce_vx < 0 else 0
+		lock_x = true
+	}
+
+	probe := ball^
+	probe.vx = bounce_vx
+	probe.vy = bounce_vy
+	active, sep_x, sep_y := pad_resolve(probe, pad_left, PAD_TOP, pad_w, PADH)
+	if active && sep_y < 0 && vy > 0 {
+		vy = bounce_vy if bounce_vy < 0 else 0
+		lock_y = true
+	}
+	if active && sep_y == 0 && sep_x < 0 && vx > 0 {
+		vx = bounce_vx if bounce_vx < 0 else 0
+		lock_x = true
+	}
+	if active && sep_y == 0 && sep_x > 0 && vx < 0 {
+		vx = bounce_vx if bounce_vx > 0 else 0
+		lock_x = true
+	}
+
+	vx, vy = fit_aim_speed(vx, vy, mag, lock_x, lock_y)
+	ball.vx = vx
+	ball.vy = vy
+	note_ball_velocity(ball)
+}
+
+// While the ball is still touching a surface, steering may not slow the axis that is leaving it.
+hold_targeting_departure :: proc(ball: Ball, vx, vy: f32, pad_left, pad_w: i32) -> (out_x, out_y: f32) {
+	out_x = vx
+	out_y = vy
+	if ball.y < SCREEN_TOP && ball.vy > 0 && out_y < ball.vy do out_y = ball.vy
+	if ball.x < SCREEN_LEFT && ball.vx > 0 && out_x < ball.vx do out_x = ball.vx
+	if ball.x > SCREEN_RIGHT && ball.vx < 0 && out_x > ball.vx do out_x = ball.vx
+	active, sep_x, sep_y := pad_resolve(ball, pad_left, PAD_TOP, pad_w, PADH)
+	if !active do return
+	if sep_y < 0 && ball.vy < 0 && out_y > ball.vy do out_y = ball.vy
+	if sep_y == 0 && sep_x != 0 && departure_lost(ball.vx, out_x) do out_x = ball.vx
+	return
+}
+
+// The nearest living brick, other than the one this bounce just left.
+nearest_brick_center :: proc(bricks: ^[dynamic]Brick, ball: Ball, skip: int) -> (x, y: i32, ok: bool) {
+	if bricks == nil do return
+	best: i64 = max(i64)
+	for i in 0 ..< len(bricks) {
+		if i == skip || bricks[i].hp <= 0 do continue
+		cx := bricks[i].x + RECT_W / 2
+		cy := bricks[i].y + RECT_H / 2
+		dx := i64(cx - ball.x)
+		dy := i64(cy - ball.y)
+		dist := dx * dx + dy * dy
+		if !ok || dist < best {
+			best = dist
+			x = cx
+			y = cy
+			ok = true
+		}
+	}
+	return
+}
+
+// The ball is one pixel outside `brick`. A line back through that brick is turned along the face
+// toward the target, so the next step does not hit the same brick again.
+keep_off_hit_brick :: proc(ball: ^Ball, brick: Brick, mag, bounce_vx, bounce_vy: f32) {
+	vx := ball.vx
+	vy := ball.vy
+	lock_x := false
+	lock_y := false
+	// Only the face the ball is sitting against, one pixel out. A ball farther away keeps the straight line.
+	on_left := ball.x >= brick.x - BALL_R - 3 && ball.x <= brick.x - BALL_R + 1
+	on_right := ball.x >= brick.x + RECT_W + BALL_R - 1 && ball.x <= brick.x + RECT_W + BALL_R + 3
+	on_top := ball.y >= brick.y - BALL_R - 3 && ball.y <= brick.y - BALL_R + 1
+	on_bottom := ball.y >= brick.y + RECT_H + BALL_R - 1 && ball.y <= brick.y + RECT_H + BALL_R + 3
+	span_y := ball.y + BALL_R >= brick.y - 2 && ball.y - BALL_R <= brick.y + RECT_H + 2
+	span_x := ball.x + BALL_R >= brick.x - 2 && ball.x - BALL_R <= brick.x + RECT_W + 2
+	if span_y && on_left && vx > 0 {
+		vx = 0
+		lock_x = true
+	} else if span_y && on_right && vx < 0 {
+		vx = 0
+		lock_x = true
+	}
+	if span_x && on_top && vy > 0 {
+		vy = 0
+		lock_y = true
+	} else if span_x && on_bottom && vy < 0 {
+		vy = 0
+		lock_y = true
+	}
+	if !lock_x && !lock_y do return
+	if lock_x && lock_y {
+		ball.vx = bounce_vx
+		ball.vy = bounce_vy
+		return
+	}
+	if lock_x {
+		if vy > 0 do vy = mag
+		else if vy < 0 do vy = -mag
+		else {
+			ball.vx = bounce_vx
+			ball.vy = bounce_vy
+			return
+		}
+		ball.vx = 0
+		ball.vy = vy
+		return
+	}
+	if vx > 0 do vx = mag
+	else if vx < 0 do vx = -mag
+	else {
+		ball.vx = bounce_vx
+		ball.vy = bounce_vy
+		return
+	}
+	ball.vx = vx
+	ball.vy = 0
+}
+
+// A wall, paddle, or brick bounce rolls the chance. A hit sets this ball's velocity to the straight
+// line from the ball to the nearest other brick and keeps its speed. That angle stays until the next
+// bounce, so the ball flies at the brick instead of curving around it. A line back into the surface
+// just left is turned off that surface. A miss leaves the bounce direction alone. skip is the brick
+// this hit just left, or -1.
+roll_targeting_on_bounce :: proc(ball: ^Ball, bricks: ^[dynamic]Brick, skip: int, pad_left, pad_w: i32) {
+	tx, ty, aimed := nearest_brick_center(bricks, ball^, skip)
+	if !super_targeting_active() || !aimed || !roll_percent(super_targeting_chance()) {
+		ball.targeting = false
+		return
+	}
+	bounce_vx := ball.vx
+	bounce_vy := ball.vy
+	mag := math.sqrt(bounce_vx * bounce_vx + bounce_vy * bounce_vy)
+	if mag < 0.001 do mag = 1
+	ball.targeting = true
+	ball.target_x = tx
+	ball.target_y = ty
+	aim_ball_at_point(ball, tx, ty, bounce_vx, bounce_vy, pad_left, pad_w)
+	if skip >= 0 && skip < len(bricks) {
+		keep_off_hit_brick(ball, bricks[skip], mag, bounce_vx, bounce_vy)
+		note_ball_velocity(ball)
+	}
+}
+
+// A ball hit blasts every other brick within the explode radius for 1 HP.
+// A bomb caught by that blast can chain, the same way a bomb hit does.
+super_blast :: proc(bricks: ^[dynamic]Brick, origin: int, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods, score: ^big.Int, elapsed_ns: i64) {
+	radius := super_explode_radius()
+	if radius < 1 do return
+	if origin < 0 || origin >= len(bricks) do return
+
+	exploded := make([]bool, len(bricks))
+	defer delete(exploded)
+	queue := make([dynamic]int)
+	defer delete(queue)
+
+	src := bricks[origin]
+	play_explosion(src.x, src.y, radius)
+	play_bomb_explode()
+	for j in 0 ..< len(bricks) {
+		if j == origin || bricks[j].hp <= 0 do continue
+		dist := brick_step_dist(src, bricks[j])
+		if dist < 1 || dist > radius do continue
+		damage_from_blast(bricks, j, exploded, &queue, falling, mods, score, elapsed_ns)
+	}
+	for head := 0; head < len(queue); head += 1 {
+		from := queue[head]
+		for j in 0 ..< len(bricks) {
+			if j == from || bricks[j].hp <= 0 do continue
+			if !orthogonal_bricks(bricks[from], bricks[j]) do continue
+			damage_from_blast(bricks, j, exploded, &queue, falling, mods, score, elapsed_ns)
+		}
+	}
 }

@@ -5,17 +5,18 @@ import "core:fmt"
 import "core:mem"
 import rl "vendor:raylib"
 
-// src/textures/font.png is 100×340. Five columns, sixteen rows. Cells are 19×20.
+// src/textures/font.png is 100×450. Five columns, twenty-one rows. Cells are 19×20.
 // A 1px line of FONT_KEY separates them: columns at x = 19, 39, 59, 79, 99 and rows at y = 20, 41, ...
-// There is no key line on the top or the left, and y = 336..339 is leftover past the last line.
+// There is no key line on the top or the left, and y = 441..449 is leftover past the last line.
 // Reading order, including the blank cells:
-//   A–Z, a–z, blank, blank, blank, 0–9, . " ' , !, ? - _ / \, : ^ v > <
+//   A–Z, a–z, blank, blank, blank, 0–9, . " ' , !, ? - _ / \, : ^ v > <,
+//   + * # $ %, @ & ( ) [, ] { } | ;, ~ ` , then blanks. The last row is empty.
 // The downward chevron shares v with the letter. The letter comes first, so that is the one drawn.
 // Space is the first blank after z.
 FONT_IMAGE_W :: 100
-FONT_IMAGE_H :: 340
+FONT_IMAGE_H :: 450
 FONT_COLS :: 5
-FONT_ROWS :: 16
+FONT_ROWS :: 21
 FONT_GLYPHS :: FONT_COLS * FONT_ROWS
 FONT_CELL_W :: 19
 FONT_CELL_H :: 20
@@ -41,6 +42,11 @@ FONT_RUNES := [FONT_GLYPHS]rune{
 	'.', '"', '\'', ',', '!',
 	'?', '-', '_', '/', '\\',
 	':', '^', 'v', '>', '<',
+	'+', '*', '#', '$', '%',
+	'@', '&', '(', ')', '[',
+	']', '{', '}', '|', ';',
+	'~', '`', 0, 0, 0,
+	0, 0, 0, 0, 0,
 }
 
 game_font: rl.Font
@@ -136,6 +142,10 @@ load_game_font :: proc() -> rl.Font {
 		rec.height = FONT_CELL_H
 		glyph := &glyphs[i]
 		glyph.value = FONT_RUNES[i]
+		if FONT_RUNES[i] == ',' {
+			glyph.advanceX = 8
+			glyph.offsetX = -13
+		}
 	}
 
 	return {

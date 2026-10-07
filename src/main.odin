@@ -23,6 +23,8 @@ import rl "vendor:raylib"
 // The window opens at this size. The playfield grows to fit the largest level, then this window letterboxes it.
 WINDOW_W :: 800
 WINDOW_H :: 600
+GAME_VERSION :: "26_0.0.0"
+WINDOW_TITLE :: "RECT-DESTROYER! " + GAME_VERSION
 
 SCW: i32 = WINDOW_W
 SCH: i32 = WINDOW_H
@@ -33,7 +35,7 @@ SCREEN_RIGHT: i32 = WINDOW_W
 
 // Pad. Draw, powerup catches, and ball collision all use this rectangle.
 PADW: i32 = 200
-PADH: i32 = 20
+PADH: i32 = 26
 BOTTOM_MARGIN :: 30
 PAD_TOP: i32 = WINDOW_H - BOTTOM_MARGIN
 
@@ -63,6 +65,10 @@ round_balls_lost: i64
 round_lives_lost: i64
 round_elapsed_ns: i64
 round_score_settled: bool
+// Every time the score hits the 2048-bit cap in a level.
+round_max_score: i64
+// Wall-clock second through which the center flash stays up.
+max_flash_until: f64
 
 // vx, vy are pixels per frame. speed_x, speed_y mirror them for whole pixels.
 // carry holds the fraction so a shallow angle still moves, one pixel at a time.
@@ -76,6 +82,10 @@ Ball :: struct {
 	stuck_dx:         i32,
 	// Set by a paddle or brick bounce. The next brick doubles the score. Falling off halves it.
 	from_bounce:      bool,
+	// Set when a bounce rolls targeting. The next bounce rolls again.
+	// target_x, target_y is the brick center that roll picked.
+	targeting:        bool,
+	target_x, target_y: i32,
 }
 
 // Paddle aim. The game runs at 500 FPS, so one frame of mouse motion is mostly noise.
@@ -406,26 +416,68 @@ collide_pad :: proc(ball: ^Ball, pad_left, pad_top, pad_w, pad_h: i32, pad_vx: f
 	note_ball_velocity(ball)
 }
 
-// src/textures/ball.png, drawn across the collision circle. A missing file keeps the red circle.
+// src/textures/ball.png, drawn across the collision circle. A super powerup uses ball_sp_0,
+// ball_sp_1, or ball_sp_2 instead. A missing file keeps the red circle.
 ball_tex: rl.Texture2D
+ball_sp_tex: [3]rl.Texture2D
 ball_tex_loaded: bool
 
 ensure_ball_texture :: proc() {
 	if ball_tex_loaded || !rl.IsWindowReady() do return
 	ball_tex_loaded = true
 	ball_tex = load_texture_file("src/textures/ball.png")
+	ball_sp_tex[0] = load_texture_file("src/textures/animations/ball_sp_0.png")
+	ball_sp_tex[1] = load_texture_file("src/textures/animations/ball_sp_1.png")
+	ball_sp_tex[2] = load_texture_file("src/textures/animations/ball_sp_2.png")
 }
 
 unload_ball_texture :: proc() {
 	if ball_tex.id != 0 do rl.UnloadTexture(ball_tex)
+	for i in 0..<len(ball_sp_tex) {
+		if ball_sp_tex[i].id != 0 do rl.UnloadTexture(ball_sp_tex[i])
+	}
 	ball_tex = {}
+	ball_sp_tex = {}
 	ball_tex_loaded = false
+}
+
+// Highest active super powerup. 0 is double, 1 is explode, 2 is targeting. -1 is the plain ball.
+ball_sp_tier :: proc() -> int {
+	if super_targeting_active() do return 2
+	if super_explode_radius() > 0 do return 1
+	if super_hit_damage() > 1 do return 0
+	return -1
+}
+
+// Four 16×16 frames stacked with no grid. Frame 0 is the bottom cell. A square sheet is one frame.
+ball_sp_frame :: proc(tex: rl.Texture2D) -> rl.Rectangle {
+	w := tex.width
+	h := tex.height
+	if w < 1 || h < 1 do return {}
+	frames := 1
+	cell := h
+	if w > 0 && h >= w && h % w == 0 {
+		frames = int(h / w)
+		cell = w
+	}
+	index := anim_frame_index(ball_sp_age, frames, true)
+	y := h - cell * i32(index + 1)
+	if y < 0 do y = 0
+	return {0, f32(y), f32(w), f32(cell)}
 }
 
 draw_ball :: proc(ball: Ball) {
 	ensure_ball_texture()
+	size: i32 = BALL_R * 2
+	tier := ball_sp_tier()
+	if tier >= 0 && tier < len(ball_sp_tex) && ball_sp_tex[tier].id != 0 {
+		tex := ball_sp_tex[tier]
+		src := ball_sp_frame(tex)
+		dst := rl.Rectangle{f32(ball.x - BALL_R), f32(ball.y - BALL_R), f32(size), f32(size)}
+		rl.DrawTexturePro(tex, src, dst, {}, 0, rl.WHITE)
+		return
+	}
 	if ball_tex.id != 0 {
-		size: i32 = BALL_R * 2
 		draw_texture_rect(ball_tex, ball.x - BALL_R, ball.y - BALL_R, size, size)
 		return
 	}
@@ -454,21 +506,25 @@ unload_pad_textures :: proc() {
 }
 
 // One horizontal repeat. The last slice is clipped to the paddle's right edge.
+// The pad art is designed at 20px tall; PADH sets the drawn height, so the slice scales evenly.
 draw_pad_center :: proc(left, width: i32) {
 	tex := pad_center_tex
 	tile_w := tex.width
 	tile_h := tex.height
 	if tile_w < 1 || tile_h < 1 do return
+	w_scale := f32(PADH) / f32(tile_h)
 	x := left
 	remain := width
 	for remain > 0 {
 		slice := tile_w
 		if slice > remain do slice = remain
+		dst_w := i32(f32(slice) * w_scale + 0.5)
+		if dst_w > remain do dst_w = remain
 		src := rl.Rectangle{0, 0, f32(slice), f32(tile_h)}
-		dst := rl.Rectangle{f32(x), f32(PAD_TOP), f32(slice), f32(PADH)}
+		dst := rl.Rectangle{f32(x), f32(PAD_TOP), f32(dst_w), f32(PADH)}
 		rl.DrawTexturePro(tex, src, dst, {}, 0, rl.WHITE)
-		x += slice
-		remain -= slice
+		x += dst_w
+		remain -= dst_w
 	}
 }
 
@@ -483,8 +539,13 @@ draw_pad_end :: proc(x: i32, flip: bool) {
 		src.x = f32(w)
 		src.width = -f32(w)
 	}
-	dst := rl.Rectangle{f32(x), f32(PAD_TOP), f32(w), f32(h)}
+	size := f32(PADH) + 4.0
+	dst := rl.Rectangle{f32(x), f32(PAD_TOP) - 2.0, size, size}
 	rl.DrawTexturePro(tex, src, dst, {}, 0, rl.WHITE)
+}
+
+pad_end_draw_w :: proc() -> i32 {
+	return PADH + 4
 }
 
 draw_paddle :: proc(left, width: i32) {
@@ -496,13 +557,14 @@ draw_paddle :: proc(left, width: i32) {
 	}
 	if pad_end_tex.id == 0 || width < 1 do return
 	draw_pad_end(left, false)
-	right := left + width - pad_end_tex.width
+	right := left + width - pad_end_draw_w()
 	if right < left do right = left
 	draw_pad_end(right, true)
 }
 
 draw_playfield :: proc(bricks: [dynamic]Brick, balls: [dynamic]Ball, falling: [dynamic]Falling_Powerup, pad_left: i32, mods: Power_Mods, shake_bricks: bool) {
 	render_life_points(mods.lives, 255)
+	render_layered_explosions(255)
 	draw_paddle(pad_left, mods.pad_w)
 	// rl.DrawRectangle(PAD_LEFT, PAD_TOP, 12, 12, rl.GREEN)
 	// rl.DrawRectangle(PAD_RIGHT, PAD_TOP, 12, 12, rl.GREEN)
@@ -511,6 +573,7 @@ draw_playfield :: proc(bricks: [dynamic]Brick, balls: [dynamic]Ball, falling: [d
 
 	renderRects(bricks, shake_bricks)
 	render_life_points(mods.lives, LIFE_POINT_OVER_ALPHA)
+	render_layered_explosions(LIFE_POINT_OVER_ALPHA)
 	for ball in balls {
 		if !ball.alive do continue
 		render_ball_trail(ball)
@@ -666,6 +729,68 @@ note_life_lost :: proc() {
 	round_lives_lost += 1
 }
 
+// The score is a big integer, but it still has a ceiling: ±(2^2047 - 1), the range of a signed 2048-bit int.
+// Without that, the bonus squares and the multiplier chains can grow the number forever and freeze the game.
+SCORE_CAP_BITS :: 2047
+
+score_cap: big.Int
+score_cap_ready: bool
+
+ensure_score_cap :: proc() {
+	if score_cap_ready do return
+	score_cap_ready = true
+	two: big.Int
+	defer big.destroy(&two)
+	if big.set(&two, 2) != big.Error.None do return
+	if big.set(&score_cap, 1) != big.Error.None do return
+	for _ in 0 ..< SCORE_CAP_BITS {
+		product: big.Int
+		if big.mul(&product, &score_cap, &two) != big.Error.None {
+			big.destroy(&product)
+			return
+		}
+		big.copy(&score_cap, &product)
+		big.destroy(&product)
+	}
+	one: big.Int
+	defer big.destroy(&one)
+	big.set(&one, 1)
+	big.sub(&score_cap, &score_cap, &one)
+}
+
+// When the in-level score reaches the cap it counts once and restarts from 0.
+cap_hit :: proc(score: ^big.Int) {
+	round_max_score += 1
+	add_super_powerup()
+	max_flash_until = rl.GetTime() + 1.0
+	play_max_score()
+	big.set(score, 0)
+}
+
+// reset_on_cap is the level score: hitting the cap counts MAX SCORE and restarts the total.
+// A run sum or total just saturates at the cap.
+clamp_score :: proc(score: ^big.Int, reset_on_cap := false) {
+	ensure_score_cap()
+	if cmp, err := big.compare(score, &score_cap); err == big.Error.None && cmp > 0 {
+		if reset_on_cap {
+			cap_hit(score)
+			return
+		}
+		big.copy(score, &score_cap)
+		return
+	}
+	neg_cap: big.Int
+	defer big.destroy(&neg_cap)
+	if big.neg(&neg_cap, &score_cap) != big.Error.None do return
+	if cmp, err := big.compare(score, &neg_cap); err == big.Error.None && cmp < 0 {
+		if reset_on_cap {
+			cap_hit(score)
+			return
+		}
+		big.copy(score, &neg_cap)
+	}
+}
+
 // Exact add. A failed allocation leaves the total unchanged.
 score_add_i64 :: proc(score: ^big.Int, delta: i64) {
 	if delta == 0 do return
@@ -675,6 +800,7 @@ score_add_i64 :: proc(score: ^big.Int, delta: i64) {
 	if big.set(&term, delta) != big.Error.None do return
 	if big.add(&sum, score, &term) != big.Error.None do return
 	big.copy(score, &sum)
+	clamp_score(score, true)
 }
 
 // Half, rounded to the nearest integer. A remainder of 0.5 rounds away from zero.
@@ -722,6 +848,7 @@ score_mul_i64 :: proc(score: ^big.Int, factor: i64) {
 	if big.set(&term, factor) != big.Error.None do return
 	if big.mul(&product, score, &term) != big.Error.None do return
 	big.copy(score, &product)
+	clamp_score(score, true)
 }
 
 // Whole-pixel faster axis. A stuck ball with no velocity is 0.
@@ -776,13 +903,40 @@ format_score_label :: proc(score: ^big.Int) -> (text: cstring, backing: []u8) {
 	if err != big.Error.None || len(digits) == 0 {
 		shown = "0"
 	}
+	with_commas := comma_digits(shown)
+	defer delete(with_commas)
 	prefix := "SCORE "
-	backing = make([]u8, len(prefix) + len(shown) + 1)
+	if round_max_score > 0 {
+		prefix_buf: [32]byte
+		n := 0
+		for ch in "MAX SCORE " {
+			prefix_buf[n] = u8(ch)
+			n += 1
+		}
+		v := round_max_score
+		tmp: [12]byte
+		count := 0
+		for v > 0 {
+			tmp[count] = u8('0') + u8(v % 10)
+			v /= 10
+			count += 1
+		}
+		for i := count - 1; i >= 0; i -= 1 {
+			prefix_buf[n] = tmp[i]
+			n += 1
+		}
+		for ch in "X + " {
+			prefix_buf[n] = u8(ch)
+			n += 1
+		}
+		prefix = string(prefix_buf[:n])
+	}
+	backing = make([]u8, len(prefix) + len(with_commas) + 1)
 	for ch, i in prefix {
 		backing[i] = u8(ch)
 	}
-	for ch, i in shown {
-		backing[len(prefix) + i] = u8(ch)
+	for ch, i in with_commas {
+		backing[len(prefix) + i] = ch
 	}
 	backing[len(backing) - 1] = 0
 	return cstring(raw_data(backing)), backing
@@ -802,6 +956,23 @@ any_ball_alive :: proc(balls: [dynamic]Ball) -> bool {
 		if ball.alive do return true
 	}
 	return false
+}
+
+// Big yellow blink, briefly, in the middle of the playfield, each time the score caps.
+draw_max_score_flash :: proc() {
+	if round_max_score <= 0 || rl.GetTime() >= max_flash_until do return
+	label: cstring
+	if round_max_score == 1 {
+		label = "MAX SCORE"
+	} else {
+		label = fmt.ctprintf("MAX SCORE %dX", round_max_score)
+	}
+	// ~6 blinks a second.
+	alpha: u8 = 255
+	if int(rl.GetTime() * 12) % 2 == 0 do alpha = 70
+	size := px(56)
+	w := measure_text(label, size)
+	draw_text(label, (SCW - w) / 2, SCH / 2 - size / 2, size, rl.Color{255, 255, 0, alpha})
 }
 
 // Left click releases every ball sitting on the paddle. A still paddle sends them straight up.
@@ -830,6 +1001,7 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 		if ball.x < BALL_R do ball.x = BALL_R
 		if ball.x > SCW - BALL_R do ball.x = SCW - BALL_R
 		ball.y = PAD_TOP - BALL_R
+		ball.targeting = false
 		return
 	}
 
@@ -855,6 +1027,7 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 		if ball.y > SCH {
 			note_score_trip_lost(ball, score)
 			play_ball_lost(ball.x)
+			play_ball_lost_sound()
 			lose_ball(ball, balls, mods)
 			return
 		}
@@ -875,6 +1048,8 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 		if wall {
 			note_ball_velocity(ball)
 			on_speed_bounce(balls, mods)
+			play_ball_bounce_wall_pad()
+			roll_targeting_on_bounce(ball, bricks, -1, pad_left, mods.pad_w)
 		}
 
 		active, sep_x, sep_y := pad_resolve(ball^, pad_left, PAD_TOP, mods.pad_w, PADH)
@@ -893,6 +1068,8 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 			ball.from_bounce = true
 			on_speed_bounce(balls, mods)
 			collide_pad(ball, pad_left, PAD_TOP, mods.pad_w, PADH, pad_vx, ball_base_speed(mods^), pad_launch_limit(mods^))
+			play_ball_bounce_wall_pad()
+			roll_targeting_on_bounce(ball, bricks, -1, pad_left, mods.pad_w)
 		}
 
 		hit, broke, hp_before, brick_index := collideRects(bricks, ball)
@@ -907,10 +1084,12 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 			explode_from_hit(bricks, brick_index, falling, mods, score, elapsed_ns)
 			// Neighbors broken by the blast are scored there. This scores the brick the ball itself finished.
 			if broke {
-				grant_brick_drops(bricks[brick_index], falling, mods)
+				grant_brick_drops(bricks[brick_index], falling, mods, score)
 				score_add_i64(score, brick_points(elapsed_ns))
 			}
+			super_blast(bricks, brick_index, falling, mods, score, elapsed_ns)
 			on_speed_bounce(balls, mods)
+			roll_targeting_on_bounce(ball, bricks, brick_index, pad_left, mods.pad_w)
 		}
 
 		if wall || falling_onto_pad || side_hit || hit do return
@@ -918,7 +1097,7 @@ step_ball :: proc(ball: ^Ball, balls: ^[dynamic]Ball, bricks: ^[dynamic]Brick, f
 }
 
 // Load one LEVELS path and stick a ball to the paddle. The level-clear menu loads the next path.
-// Lives carry into that next path. A start from the menu sets them to 1.
+// Lives and super powerups carry into that next path. A start from the menu sets both back.
 start_level :: proc(index: int, bricks: ^[dynamic]Brick, balls: ^[dynamic]Ball, falling: ^[dynamic]Falling_Powerup, mods: ^Power_Mods, reset_lives: bool, pad_left: i32) {
 	if index < 0 || index >= len(LEVELS) do return
 	delete(bricks^)
@@ -931,8 +1110,10 @@ start_level :: proc(index: int, bricks: ^[dynamic]Brick, balls: ^[dynamic]Ball, 
 	round_powerups = 0
 	round_balls_lost = 0
 	round_lives_lost = 0
+	round_max_score = 0
 	round_elapsed_ns = 0
 	round_score_settled = false
+	max_flash_until = 0
 	level_banked = false
 	if reset_lives do reset_run_score()
 	lives := mods.lives
@@ -940,6 +1121,7 @@ start_level :: proc(index: int, bricks: ^[dynamic]Brick, balls: ^[dynamic]Ball, 
 	mods.pad_w = PADW
 	if reset_lives {
 		mods.lives = START_LIVES
+		clear_super_powerups()
 	} else {
 		mods.lives = lives
 	}
@@ -955,7 +1137,7 @@ game :: proc() {
 	}
 
 	rl.SetConfigFlags({.WINDOW_RESIZABLE})
-	rl.InitWindow(WINDOW_W, WINDOW_H, "RECT-DESTROYER!")
+	rl.InitWindow(WINDOW_W, WINDOW_H, WINDOW_TITLE)
 	// Escape opens the pause menu. Raylib would otherwise close the window.
 	rl.SetExitKey(.KEY_NULL)
 	game_target := rl.LoadRenderTexture(SCW, SCH)
@@ -985,6 +1167,7 @@ game :: proc() {
 	level_started: time.Time
 	skipped_ns: i64 = 0
 	pause_started: time.Time
+	mouse_captured := false
 
 	for !rl.WindowShouldClose() {
 		if screen == .PLAY || screen == .LAST_LIFE {
@@ -1001,6 +1184,62 @@ game :: proc() {
 
 		next, start, picked_level, quit := update_menus(screen, mouse, level_index)
 		if quit do break
+
+		debug_press := -1
+		if debug_mode {
+			debug_press = debug_button_index(mouse)
+		}
+		if debug_press >= 0 {
+			elapsed := level_elapsed_ns(level_started, skipped_ns)
+			switch debug_press {
+			case DEBUG_ADD_LIFE:
+				mods.lives += 1
+			case DEBUG_REMOVE_LIFE:
+				if mods.lives > 0 do mods.lives -= 1
+			case DEBUG_WIDE:
+				apply_powerup(.WIDE, &mods, &score)
+			case DEBUG_MULTIPLY:
+				apply_powerup(.MULTIPLY, &mods, &score)
+			case DEBUG_STICK:
+				apply_powerup(.STICK, &mods, &score)
+			case DEBUG_LIFE:
+				apply_powerup(.LIFE, &mods, &score)
+			case DEBUG_FAST:
+				apply_powerup(.FAST, &mods, &score)
+			case DEBUG_BONUS:
+				apply_powerup(.BONUS, &mods, &score)
+			case DEBUG_DOUBLE:
+				grant_debug_super(.DOUBLE)
+			case DEBUG_EXPLODE:
+				grant_debug_super(.EXPLODE)
+			case DEBUG_TARGETING:
+				grant_debug_super(.TARGETING)
+			case DEBUG_BOMB:
+				origin := -1
+				for i in 0..<len(bricks) {
+					if bricks[i].hp > 0 {
+						origin = i
+						break
+					}
+				}
+				if origin >= 0 {
+					saved := bricks[origin].drops
+					saved_count := bricks[origin].drop_count
+					bricks[origin].drops[0] = Brick_Drop{kind = .BOMB, target = .RECT, chance = 100}
+					bricks[origin].drop_count = 1
+					explode_from_hit(&bricks, origin, &falling, &mods, &score, elapsed)
+					bricks[origin].drops = saved
+					bricks[origin].drop_count = saved_count
+				}
+			case DEBUG_CLEAR_POWERUPS:
+				mods.pad_w = PADW
+				mods.multiply_until = 0
+				mods.stick = false
+				mods.fast = false
+				mods.speed_bonus = 0
+			}
+		}
+
 		if start {
 			level_index = picked_level
 			big.set(&score, 0)
@@ -1015,7 +1254,7 @@ game :: proc() {
 			pad_left = i32(mouse.x) - mods.pad_w / 2
 			pad_vx := pad_motion_sample(&pad_motion, pad_left)
 
-			if rl.IsMouseButtonPressed(rl.MouseButton.RIGHT) {
+			if debug_mode && rl.IsMouseButtonPressed(rl.MouseButton.RIGHT) {
 				mods.speed_bonus = 0
 				serve_ball(&balls, pad_left, mods.pad_w)
 			}
@@ -1041,19 +1280,21 @@ game :: proc() {
 					note_life_lost()
 					if mods.lives > 0 {
 						play_life_lost(int(mods.lives))
+						play_life_lost_sound()
 						start_screen_shake()
 						mods.speed_bonus = 0
 						serve_ball(&balls, pad_left, mods.pad_w)
 					} else {
 						mods.lives = 0
 						play_life_finale()
+						play_last_life_lost()
 						start_finale_shake()
 						next = .LAST_LIFE
 					}
 				}
 				if next == .PLAY {
 					pad_left = i32(mouse.x) - mods.pad_w / 2
-					update_falling_powerups(&falling, pad_left, PAD_TOP, PADH, &mods, rl.GetFrameTime())
+					update_falling_powerups(&falling, pad_left, PAD_TOP, PADH, &mods, rl.GetFrameTime(), &score)
 					pad_left = i32(mouse.x) - mods.pad_w / 2
 				}
 			}
@@ -1062,6 +1303,9 @@ game :: proc() {
 				settle_round_score(&score, mods, balls[:], round_powerups, round_balls_lost, round_lives_lost)
 				round_elapsed_ns = elapsed
 				round_score_settled = true
+			}
+			if next == .LAST_LIFE {
+				clear_super_powerups()
 			}
 		} else if next == screen && (screen == .PAUSE || screen == .LEVEL_END || screen == .LAST_LIFE || screen == .LOST) && mods.multiply_until > rl.GetTime() {
 			// Keep the x2 countdown from draining while the board is frozen.
@@ -1083,6 +1327,15 @@ game :: proc() {
 			update_animations(rl.GetFrameTime(), screen == .PLAY)
 		}
 		update_theme(screen)
+		// In a level the cursor is locked to the window, so it cannot wander off mid-brick. A menu frees it.
+		in_level := screen == .PLAY || screen == .LAST_LIFE
+		if in_level && !mouse_captured {
+			rl.DisableCursor()
+			mouse_captured = true
+		} else if !in_level && mouse_captured {
+			rl.EnableCursor()
+			mouse_captured = false
+		}
 		// The level score stays on screen while LEVEL_END is up, so a failed bank can retry.
 		// A loss does not count the level that was still in play.
 		if screen == .LEVEL_END && !level_banked {
@@ -1098,7 +1351,13 @@ game :: proc() {
 		if screen == .MENU || screen == .LEVEL_SELECT || screen == .SCORES {
 			draw_starfield()
 		} else {
-			draw_space_background()
+			galaxy := false
+			if level_index >= 0 && level_index < len(LEVELS) {
+				galaxy = level_number(LEVELS[level_index]) > 19
+			}
+			draw_space_background(galaxy)
+			// The field stays for the run, the same span as the super powerups.
+			if run_super_count > 0 do draw_max_score_field()
 		}
 
 		if screen == .PLAY || screen == .PAUSE || screen == .LEVEL_END || screen == .LAST_LIFE || screen == .LOST {
@@ -1111,9 +1370,11 @@ game :: proc() {
 			if screen == .PLAY || screen == .PAUSE || screen == .LAST_LIFE {
 				draw_score(&score)
 			}
+			draw_max_score_flash()
 			render_life_finale()
 		}
 		draw_menus(screen, mouse, &score, level_index, mods, balls[:])
+		draw_debug_overlay()
 		rl.EndTextureMode()
 
 		rl.BeginDrawing()
@@ -1126,6 +1387,7 @@ game :: proc() {
 	free_brick_chips()
 	unload_rect_textures()
 	unload_powerup_textures()
+	shutdown_super_powerups()
 	unload_ball_texture()
 	unload_pad_textures()
 	unload_life_point_texture()
@@ -1141,6 +1403,6 @@ game :: proc() {
 
 main :: proc() {
 	fmt.printf("%v", os.get_current_directory(context.allocator))
-	fmt.println("RECT-DESTROYER!")
+	fmt.println(WINDOW_TITLE)
 	game()
 }

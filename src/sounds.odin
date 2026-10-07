@@ -7,10 +7,10 @@ import rl "vendor:raylib"
 // A third play restarts one of them. Raylib's pool is 16 channels. Five clips use ten, and the theme uses one more.
 SOUND_VOICES :: 2
 
-// Menus play the theme at full volume. A level turns it down a little, and it stays there until a menu.
+// Menus play the theme at 1.25. A level is a step quieter, at 1, until a menu.
 THEME_PATH :: "src/sounds/Rect_Destroyer.wav"
-THEME_VOLUME :: f32(1)
-LEVEL_VOLUME :: f32(0.8)
+THEME_VOLUME :: f32(1.25)
+LEVEL_VOLUME :: f32(1)
 
 Sound_Clip :: enum {
 	HIT_0,
@@ -18,6 +18,13 @@ Sound_Clip :: enum {
 	DESTROY_0,
 	DESTROY_1,
 	BOMB_EXPLODE,
+	BALL_BOUNCE,
+	BALL_LOST,
+	LAST_LIFE_LOST,
+	LIFE_LOST,
+	MENU_BUTTON_CLICK,
+	PAD_COLLECT_POWERUP,
+	MAX_SCORE,
 }
 
 Sound_Voice :: struct {
@@ -76,6 +83,13 @@ ensure_sounds :: proc() {
 	load_clip(.DESTROY_0, "src/sounds/destroy_0.wav")
 	load_clip(.DESTROY_1, "src/sounds/destroy_1.wav")
 	load_clip(.BOMB_EXPLODE, "src/sounds/bomb_explode.wav")
+	load_clip(.BALL_BOUNCE, "src/sounds/ball_bounce_wall_pad.wav")
+	load_clip(.BALL_LOST, "src/sounds/ball_lost.wav")
+	load_clip(.LAST_LIFE_LOST, "src/sounds/last_life_lost.wav")
+	load_clip(.LIFE_LOST, "src/sounds/life_lost.wav")
+	load_clip(.MENU_BUTTON_CLICK, "src/sounds/menu_button_click.wav")
+	load_clip(.PAD_COLLECT_POWERUP, "src/sounds/pad_collect_powerup.wav")
+	load_clip(.MAX_SCORE, "src/sounds/max_score.wav")
 
 	theme = rl.LoadMusicStream(THEME_PATH)
 	if !rl.IsMusicValid(theme) {
@@ -111,12 +125,22 @@ unload_sounds :: proc() {
 	if rl.IsAudioDeviceReady() do rl.CloseAudioDevice()
 }
 
+// Relative levels on the master. The bounce is frequent, so it stays quieter.
+clip_volume :: proc(clip: Sound_Clip) -> f32 {
+	if clip == .BALL_BOUNCE do return 0.35
+	if clip == .HIT_1 || clip == .DESTROY_1 do return 1.2
+	if clip == .MAX_SCORE do return 2.4
+	if clip == .MENU_BUTTON_CLICK do return 0.75
+	return 1
+}
+
 play_clip :: proc(clip: Sound_Clip) {
 	ensure_sounds()
 	if !sounds_ready do return
 	for i in 0..<SOUND_VOICES {
 		voice := clip_voices[clip][i].sound
 		if rl.IsSoundValid(voice) && !rl.IsSoundPlaying(voice) {
+			rl.SetSoundVolume(voice, clip_volume(clip))
 			rl.PlaySound(voice)
 			return
 		}
@@ -127,6 +151,7 @@ play_clip :: proc(clip: Sound_Clip) {
 		voice := clip_voices[clip][i].sound
 		if !rl.IsSoundValid(voice) do continue
 		clip_next[clip] = (i + 1) % SOUND_VOICES
+		rl.SetSoundVolume(voice, clip_volume(clip))
 		rl.PlaySound(voice)
 		return
 	}
@@ -149,7 +174,35 @@ play_bomb_explode :: proc() {
 	play_clip(.BOMB_EXPLODE)
 }
 
-// Keeps the theme looping. Menus stay at full volume. A level, including pause and its end screens, is a little quieter.
+play_ball_bounce_wall_pad :: proc() {
+	play_clip(.BALL_BOUNCE)
+}
+
+play_ball_lost_sound :: proc() {
+	play_clip(.BALL_LOST)
+}
+
+play_last_life_lost :: proc() {
+	play_clip(.LAST_LIFE_LOST)
+}
+
+play_life_lost_sound :: proc() {
+	play_clip(.LIFE_LOST)
+}
+
+play_menu_button_click :: proc() {
+	play_clip(.MENU_BUTTON_CLICK)
+}
+
+play_pad_collect_powerup :: proc() {
+	play_clip(.PAD_COLLECT_POWERUP)
+}
+
+play_max_score :: proc() {
+	play_clip(.MAX_SCORE)
+}
+
+// Keeps the theme looping. Menus stay at THEME_VOLUME. A level, including pause and its end screens, uses LEVEL_VOLUME.
 update_theme :: proc(screen: Screen) {
 	if !theme_loaded do return
 	rl.UpdateMusicStream(theme)
