@@ -600,6 +600,15 @@ format_named_count :: proc(buf: ^[64]byte, label: string, value: i64) -> cstring
 	return cstring(&buf[0])
 }
 
+// `MAX SCORE nX +`. n is the run's cap count.
+format_max_score_line :: proc(buf: ^[64]byte, value: i64) -> cstring {
+	n := append_text(buf, 0, "MAX SCORE ")
+	n = append_i64(buf, n, value)
+	n = append_text(buf, n, "X +")
+	buf[n] = 0
+	return cstring(&buf[0])
+}
+
 draw_centered_line :: proc(text: cstring, y, size: i32) {
 	tw := measure_text(text, size)
 	x := (SCW - tw) / 2
@@ -608,7 +617,8 @@ draw_centered_line :: proc(text: cstring, y, size: i32) {
 }
 
 // The level-clear and you-lost crawl. A finished run adds the total in the totals-example order:
-// STATS, the date and 12-hour time, Total Score:, MAX SCORE nX + when this level hit the cap, then the raw digits.
+// STATS, the date and 12-hour time, Total Score:, MAX SCORE nX + for the whole run, the raw digits,
+// LEVEL n for the highest level reached, then WON or LOST.
 Credit_Kind :: enum {
 	LEVEL_HEAD,
 	LEVEL_DIGIT,
@@ -618,6 +628,8 @@ Credit_Kind :: enum {
 	TOTAL_HEAD,
 	MAX_LINE,
 	TOTAL_DIGIT,
+	LEVEL_REACHED,
+	RESULT,
 	STAT,
 }
 
@@ -673,11 +685,8 @@ draw_end_credits :: proc(mods: Power_Mods, balls: []Ball) {
 		if total_lines < 1 do total_lines = 1
 	}
 	max_buf: [64]byte
-	if show_total && round_max_score > 0 {
-		n := append_text(&max_buf, 0, "MAX SCORE ")
-		n = append_i64(&max_buf, n, round_max_score)
-		n = append_text(&max_buf, n, "X +")
-		max_buf[n] = 0
+	if show_total && run_max_score > 0 {
+		format_max_score_line(&max_buf, run_max_score)
 	}
 
 	rows := make([dynamic]Credit_Row)
@@ -691,10 +700,12 @@ draw_end_credits :: proc(mods: Power_Mods, balls: []Ball) {
 	if show_total {
 		if has_date do append(&rows, Credit_Row{kind = .DATE})
 		append(&rows, Credit_Row{kind = .TOTAL_HEAD})
-		if round_max_score > 0 do append(&rows, Credit_Row{kind = .MAX_LINE})
+		if run_max_score > 0 do append(&rows, Credit_Row{kind = .MAX_LINE})
 		for i in 0..<total_lines {
 			append(&rows, Credit_Row{kind = .TOTAL_DIGIT, index = i})
 		}
+		if run_level > 0 do append(&rows, Credit_Row{kind = .LEVEL_REACHED})
+		if run_result == .WON || run_result == .LOST do append(&rows, Credit_Row{kind = .RESULT})
 	}
 	for slot in 0..<8 + alive {
 		append(&rows, Credit_Row{kind = .STAT, index = slot})
@@ -767,6 +778,15 @@ draw_end_credits :: proc(mods: Power_Mods, balls: []Ball) {
 			text := cstring(raw_data(line_buf))
 			tw := measure_text(text, digit_size)
 			draw_text(text, (SCW - tw) / 2, ty, digit_size, rl.WHITE)
+		case .LEVEL_REACHED:
+			reached: [64]byte
+			draw_centered_line(format_named_count(&reached, "LEVEL ", i64(run_level)), ty, size)
+		case .RESULT:
+			if run_result == .WON {
+				draw_centered_line("WON", ty, size)
+			} else {
+				draw_centered_line("LOST", ty, size)
+			}
 		case .STAT:
 			slot := row.index
 			label: [64]byte
@@ -883,7 +903,7 @@ prepare_end_credits :: proc(screen: Screen, score: ^big.Int) {
 	credits_for = screen
 }
 
-// Each saved total is flat text in the center of the playfield: the date, Total Score:, then the raw digits. It scales from a speck to larger than the screen.
+// Each saved total is flat text in the center of the playfield: the date, Total Score:, the run's max score, the digits, the highest level, and won or lost. It scales from a speck to larger than the screen.
 // fill is the larger of the block's width and height, as a fraction of the playfield.
 // The size is multiplied by the same amount each moment, so the zoom does not rush and then crawl.
 // The next score waits SCORE_POP_GAP seconds after the previous one finishes, so the zooms do not overlap.
@@ -986,33 +1006,64 @@ draw_score_pops :: proc() {
 	if index >= n do index = n - 1
 	local := score_pop_t - f32(index) * slot
 	if local < 0 || local >= SCORE_POP_SECONDS do return
-	draw_score_pop(score_lines[index].stamp, score_lines[index].text, local / SCORE_POP_SECONDS)
+	draw_score_pop(score_lines[index], local / SCORE_POP_SECONDS)
 }
 
-// Date and 12-hour time, then `Total Score:`, then the raw digits at a smaller size. No commas.
-draw_score_pop :: proc(stamp: string, digits: string, phase: f32) {
+// Date and 12-hour time, `Total Score:`, `MAX SCORE nX +` when the run hit the cap,
+// the raw digits at a smaller size, then `LEVEL n` and `WON` or `LOST` when the line recorded them.
+draw_score_pop :: proc(entry: Saved_Score, phase: f32) {
 	fill := score_pop_fill(phase)
 	alpha := score_pop_alpha(fill)
 	if alpha == 0 do return
 
+	digits := entry.text
 	date_buf: [32]byte
-	date_text, has_date := total_date_label(stamp, &date_buf)
+	date_text, has_date := total_date_label(entry.stamp, &date_buf)
 	digit_lines := 0
 	if len(digits) > 0 {
 		digit_lines = (len(digits) + SCORE_POP_CPL - 1) / SCORE_POP_CPL
 	}
+	max_buf: [64]byte
+	show_max := entry.max_score > 0
+	max_text: cstring
+	if show_max do max_text = format_max_score_line(&max_buf, entry.max_score)
+	level_buf: [64]byte
+	show_level := entry.level > 0
+	level_text: cstring
+	if show_level do level_text = format_named_count(&level_buf, "LEVEL ", i64(entry.level))
+	show_result := entry.result == .WON || entry.result == .LOST
+	result_text: cstring = "LOST"
+	if entry.result == .WON do result_text = "WON"
+
+	heads_before := 1
+	if has_date do heads_before += 1
+	if show_max do heads_before += 1
+	heads_after := 0
+	if show_level do heads_after += 1
+	if show_result do heads_after += 1
 
 	head_ref := SCORE_POP_REF
 	digit_ref := SCORE_POP_REF * 0.42
 	head_step := head_ref * 7 / 6
 	digit_step := digit_ref * 7 / 6
 	max_w := score_measure("Total Score:", head_ref)
-	ink_h := head_ref
 	if has_date {
 		w := score_measure(date_text, head_ref)
 		if w > max_w do max_w = w
-		ink_h = head_step + head_ref
 	}
+	if show_max {
+		w := score_measure(max_text, head_ref)
+		if w > max_w do max_w = w
+	}
+	if show_level {
+		w := score_measure(level_text, head_ref)
+		if w > max_w do max_w = w
+	}
+	if show_result {
+		w := score_measure(result_text, head_ref)
+		if w > max_w do max_w = w
+	}
+	ink_h := head_step * f32(heads_before - 1) + head_ref
 	line_buf: [SCORE_POP_CPL + 1]byte
 	if digit_lines > 0 {
 		ink_h += head_step - head_ref
@@ -1022,6 +1073,14 @@ draw_score_pop :: proc(stamp: string, digits: string, phase: f32) {
 			w := score_measure(cstring(&line_buf[0]), digit_ref)
 			if w > max_w do max_w = w
 		}
+	}
+	if heads_after > 0 {
+		if digit_lines > 0 {
+			ink_h += digit_step - digit_ref
+		} else {
+			ink_h += head_step - head_ref
+		}
+		ink_h += head_step * f32(heads_after - 1) + head_ref
 	}
 	limit := ink_h / f32(SCH)
 	wide := max_w / f32(SCW)
@@ -1043,12 +1102,26 @@ draw_score_pop :: proc(stamp: string, digits: string, phase: f32) {
 	tw := score_measure("Total Score:", head_size)
 	score_draw_line("Total Score:", (f32(SCW) - tw) * 0.5, y, head_size, color)
 	y += head_pitch
+	if show_max {
+		mw := score_measure(max_text, head_size)
+		score_draw_line(max_text, (f32(SCW) - mw) * 0.5, y, head_size, color)
+		y += head_pitch
+	}
 	for li in 0..<digit_lines {
 		if score_digit_line(digits, li, &line_buf) == 0 do continue
 		text := cstring(&line_buf[0])
 		w := score_measure(text, digit_size)
 		score_draw_line(text, (f32(SCW) - w) * 0.5, y, digit_size, color)
 		y += digit_pitch
+	}
+	if show_level {
+		lw := score_measure(level_text, head_size)
+		score_draw_line(level_text, (f32(SCW) - lw) * 0.5, y, head_size, color)
+		y += head_pitch
+	}
+	if show_result {
+		rw := score_measure(result_text, head_size)
+		score_draw_line(result_text, (f32(SCW) - rw) * 0.5, y, head_size, color)
 	}
 }
 

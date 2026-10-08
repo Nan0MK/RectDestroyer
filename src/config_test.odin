@@ -365,6 +365,9 @@ test_score_trip :: proc(t: ^testing.T) {
 
 @(test)
 test_run_overall :: proc(t: ^testing.T) {
+	saved_max := round_max_score
+	defer round_max_score = saved_max
+	round_max_score = 0
 	reset_run_score()
 	defer reset_run_score()
 
@@ -385,6 +388,63 @@ test_run_overall :: proc(t: ^testing.T) {
 	reset_run_score()
 	testing.expect(t, compute_run_overall(&run_overall))
 	expect_score_i64(t, &run_overall, 0)
+
+	// A lost level is banked like a clear, and its cap hits stay on the run.
+	round_max_score = 4
+	lost: big.Int
+	defer big.destroy(&lost)
+	big.set(&lost, 25)
+	bank_level_score(&lost)
+	testing.expect_value(t, run_count, 1)
+	testing.expect_value(t, run_max_score, i64(4))
+	testing.expect(t, compute_run_overall(&run_overall))
+	expect_score_i64(t, &run_overall, 25)
+
+	level_banked = false
+	round_max_score = 3
+	next: big.Int
+	defer big.destroy(&next)
+	big.set(&next, 2)
+	bank_level_score(&next)
+	testing.expect_value(t, run_max_score, i64(7))
+	testing.expect(t, compute_run_overall(&run_overall))
+	// (25 + 2) * 2
+	expect_score_i64(t, &run_overall, 54)
+}
+
+@(test)
+test_saved_score_line :: proc(t: ^testing.T) {
+	old, ok := parse_saved_score_line("2026-10-07 15:04:05=12345")
+	defer delete(old.text)
+	defer delete(old.stamp)
+	testing.expect(t, ok && !old.detailed)
+	testing.expect_value(t, old.text, "12345")
+	testing.expect_value(t, old.max_score, i64(-1))
+
+	bare, bare_ok := parse_saved_score_line("-7")
+	defer delete(bare.text)
+	defer delete(bare.stamp)
+	testing.expect(t, bare_ok && bare.text == "-7" && !bare.detailed)
+
+	full, full_ok := parse_saved_score_line("2026-10-07 15:04:05=0;17;40;L")
+	defer delete(full.text)
+	defer delete(full.stamp)
+	testing.expect(t, full_ok && full.detailed && full.result == .LOST)
+	testing.expect_value(t, full.text, "0")
+	testing.expect_value(t, full.max_score, i64(17))
+	testing.expect_value(t, full.level, 40)
+
+	won, won_ok := parse_saved_score_line("9;2;100;W")
+	defer delete(won.text)
+	defer delete(won.stamp)
+	testing.expect(t, won_ok && won.result == .WON)
+	testing.expect_value(t, won.max_score, i64(2))
+	testing.expect_value(t, won.level, 100)
+
+	_, bad := parse_saved_score_line("12;1;2;X")
+	testing.expect(t, !bad)
+	_, junk := parse_saved_score_line("nope")
+	testing.expect(t, !junk)
 }
 
 expect_half :: proc(t: ^testing.T, start, want: i64) {

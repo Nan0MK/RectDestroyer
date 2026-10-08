@@ -20,10 +20,19 @@ import "core:strings"
 import "core:time"
 import rl "vendor:raylib"
 
+// icon.png sits next to the executable, or in the repo root when launched from there.
+set_window_icon :: proc() {
+	if !os.exists("icon.png") do return
+	img := rl.LoadImage("icon.png")
+	if img.data == nil do return
+	rl.SetWindowIcon(img)
+	rl.UnloadImage(img)
+}
+
 // The window opens at this size. The playfield grows to fit the largest level, then this window letterboxes it.
 WINDOW_W :: 800
 WINDOW_H :: 600
-GAME_VERSION :: "26_0.0.0"
+GAME_VERSION :: "26_1.0.1"
 WINDOW_TITLE :: "RECT-DESTROYER! " + GAME_VERSION
 
 SCW: i32 = WINDOW_W
@@ -1116,6 +1125,7 @@ start_level :: proc(index: int, bricks: ^[dynamic]Brick, balls: ^[dynamic]Ball, 
 	max_flash_until = 0
 	level_banked = false
 	if reset_lives do reset_run_score()
+	note_run_level(level_number(LEVELS[index]))
 	lives := mods.lives
 	mods^ = {}
 	mods.pad_w = PADW
@@ -1138,6 +1148,7 @@ game :: proc() {
 
 	rl.SetConfigFlags({.WINDOW_RESIZABLE})
 	rl.InitWindow(WINDOW_W, WINDOW_H, WINDOW_TITLE)
+	set_window_icon()
 	// Escape opens the pause menu. Raylib would otherwise close the window.
 	rl.SetExitKey(.KEY_NULL)
 	game_target := rl.LoadRenderTexture(SCW, SCH)
@@ -1336,13 +1347,14 @@ game :: proc() {
 			rl.EnableCursor()
 			mouse_captured = false
 		}
-		// The level score stays on screen while LEVEL_END is up, so a failed bank can retry.
-		// A loss does not count the level that was still in play.
-		if screen == .LEVEL_END && !level_banked {
+		// The level score stays on screen while that menu is up, so a failed bank can retry.
+		// A loss counts the level that was still in play, so the total is not forced to 0.
+		if (screen == .LEVEL_END || screen == .LOST) && !level_banked {
 			bank_level_score(&score)
 		}
-		if screen == .LOST || (screen == .LEVEL_END && level_index + 1 >= len(LEVELS)) {
-			finish_run()
+		// Wait until this level is in the sum. Saving first would freeze a 0 total.
+		if level_banked && (screen == .LOST || (screen == .LEVEL_END && level_index + 1 >= len(LEVELS))) {
+			finish_run(screen == .LEVEL_END)
 		}
 
 		// ___

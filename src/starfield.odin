@@ -203,10 +203,11 @@ star_draw_z :: proc(id: int) -> f32 {
 }
 
 // On top of the space cube once this run has reached MAX SCORE. It stays through later levels, like the super powerups. Five sheets, faster than the menu starfield.
+// The fade sits a little farther from the camera than the menu sheets (those clear at 38 from a spawn at 50).
 MAX_FIELD_COUNT :: 5
-MAX_FIELD_FAR :: f32(50)
+MAX_FIELD_FAR :: f32(58)
 MAX_FIELD_SPEED :: f32(16)
-MAX_FIELD_CLEAR :: f32(38)
+MAX_FIELD_CLEAR :: f32(46)
 
 max_field_tex: rl.Texture2D
 max_field: [MAX_FIELD_COUNT]Star_Sheet
